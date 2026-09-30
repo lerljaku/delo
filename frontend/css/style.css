@@ -1,0 +1,135 @@
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface-1: #fcfcfb;
+  --surface-2: #f0efec;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: #2a78d6;
+  --accent: #2a78d6;
+  --good-text: #006300;
+  --critical: #d03b3b;
+  --warning: #fab219;
+  --badge-supporter: #2a78d6;
+  --badge-diamond: #4a3aa7;
+  --radius: 8px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface-1: #1a1a19;
+    --surface-2: #262624;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --accent: #3987e5;
+    --good-text: #0ca30c;
+    --critical: #e66767;
+    --badge-supporter: #3987e5;
+    --badge-diamond: #9085e9;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text-primary); line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.6rem; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; margin: 32px 0 12px; }
+.muted { color: var(--text-muted); }
+.secondary { color: var(--text-secondary); }
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* nav */
+.topnav { background: var(--surface-1); border-bottom: 1px solid var(--border); }
+.topnav .inner { max-width: 1100px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.topnav .brand { font-weight: 800; font-size: 1.15rem; color: var(--text-primary); letter-spacing: -0.02em; }
+.topnav .brand span { color: var(--critical); }
+.topnav a.active { color: var(--text-primary); font-weight: 600; }
+.topnav .spacer { flex: 1; }
+.topnav select { font-size: 0.8rem; }
+
+/* surfaces */
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+
+/* segmented control */
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.segmented button { border: 0; background: var(--surface-1); color: var(--text-secondary); padding: 6px 14px; cursor: pointer; font: inherit; }
+.segmented button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+/* forms */
+input, select, textarea, button { font: inherit; color: inherit; }
+input[type=text], input[type=date], input[type=search], input[type=email], select, textarea {
+  background: var(--surface-1); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 10px;
+}
+textarea { width: 100%; min-height: 240px; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+button.primary, button.secondary, a.button {
+  border-radius: 6px; padding: 7px 16px; cursor: pointer; border: 1px solid var(--accent); display: inline-block;
+}
+button.primary { background: var(--accent); color: #fff; }
+button.secondary, a.button { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+
+/* tables */
+table { width: 100%; border-collapse: collapse; background: var(--surface-1); }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--grid); text-align: left; }
+th { font-size: 0.8rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+tbody tr:hover { background: var(--surface-2); }
+.table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; }
+
+/* stat tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.tile .label { font-size: 0.8rem; color: var(--text-secondary); }
+.tile .value { font-size: 1.5rem; font-weight: 650; }
+.tile .sub { font-size: 0.8rem; color: var(--text-muted); }
+
+/* results */
+.res-W { color: var(--good-text); font-weight: 600; }
+.res-L { color: var(--critical); font-weight: 600; }
+.res-D, .res-BYE { color: var(--text-secondary); font-weight: 600; }
+.delta-pos { color: var(--good-text); }
+.delta-neg { color: var(--critical); }
+
+/* badges */
+.badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; vertical-align: middle; margin-left: 6px; color: #fff; }
+.badge.supporter { background: var(--badge-supporter); }
+.badge.diamond { background: var(--badge-diamond); }
+.badge.type-rel { background: var(--text-primary); color: var(--page); }
+.badge.type-casual { background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border); }
+.hidden-name { font-style: italic; color: var(--text-muted); }
+
+/* chart */
+.chart-card { position: relative; height: 320px; }
+
+/* messages */
+.msg { padding: 10px 14px; border-radius: 6px; margin: 12px 0; border: 1px solid var(--border); background: var(--surface-2); }
+.msg.error { border-color: var(--critical); }
+.msg.error::before { content: "⚠ "; color: var(--critical); }
+.msg.ok::before { content: "✓ "; color: var(--good-text); }
+
+details.tournament { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; }
+details.tournament summary { padding: 10px 14px; cursor: pointer; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+details.tournament summary .name { font-weight: 600; flex: 1; min-width: 180px; }
+details.tournament table { border-top: 1px solid var(--grid); }
+
+.markdown h2 { margin-top: 16px; }
+.formula { font-family: "Cambria Math", "STIX Two Math", serif; font-size: 1.2rem; padding: 12px 16px; background: var(--surface-2); border-radius: 6px; display: inline-block; }
+footer { text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 24px; }
+pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
+.tile .value.name { font-size: 1.05rem; padding-top: 6px; }

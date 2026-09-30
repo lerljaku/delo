@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local dev data
+.localdata/
+
+# Terraform
+infra/.terraform/
+infra/build/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# IDE / OS
+.idea/workspace.xml
+.idea/claudeCodeEditorTabs.xml
+.idea/shelf/
+.DS_Store
+Thumbs.db
+
+# Real tournament exports contain personal data (player names); keep them out of git
+raw-data*/

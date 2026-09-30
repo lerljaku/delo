@@ -1,0 +1,19 @@
+name: Data problem
+description: Wrong result, misspelled or duplicated player, missing tournament
+labels: [data]
+body:
+  - type: input
+    id: tournament
+    attributes:
+      label: Tournament (name and date)
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong and what should it be?
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: "Want your name hidden? Don't post personal details here. Sign in on the website, claim your profile and use the privacy switch, or contact an admin."

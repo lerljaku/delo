@@ -1,0 +1,31 @@
+﻿{
+  "name": "Store Championship",
+  "date": "2026-08-15",
+  "type": "rel",
+  "rounds": [
+    {"round": 1, "matches": [
+      {"player1": "Alice Novak", "player2": "Heidi Marek", "result": "2-0"},
+      {"player1": "Bob Horvath", "player2": "Grace Ruzicka", "result": "0-2"},
+      {"player1": "Carol Svoboda", "player2": "Eve Cerna", "result": "2-1"},
+      {"player1": "Dave Dvorak", "player2": "Frank Kral", "result": "2-1"}
+    ]},
+    {"round": 2, "matches": [
+      {"player1": "Alice Novak", "player2": "Grace Ruzicka", "result": "1-2"},
+      {"player1": "Carol Svoboda", "player2": "Dave Dvorak", "result": "2-0"},
+      {"player1": "Bob Horvath", "player2": "Heidi Marek", "result": "2-0"},
+      {"player1": "Eve Cerna", "player2": "Frank Kral", "result": "2-0"}
+    ]},
+    {"round": 3, "matches": [
+      {"player1": "Grace Ruzicka", "player2": "Carol Svoboda", "result": "2-1"},
+      {"player1": "Alice Novak", "player2": "Bob Horvath", "result": "2-0"},
+      {"player1": "Eve Cerna", "player2": "Dave Dvorak", "result": "2-1"},
+      {"player1": "Frank Kral", "player2": "Heidi Marek", "result": "2-0"}
+    ]},
+    {"round": 4, "matches": [
+      {"player1": "Grace Ruzicka", "player2": "Alice Novak", "result": "0-2"},
+      {"player1": "Carol Svoboda", "player2": "Eve Cerna", "result": "1-1-1"},
+      {"player1": "Bob Horvath", "player2": "Dave Dvorak", "result": "2-1"},
+      {"player1": "Frank Kral", "player2": "Heidi Marek", "result": "2-0"}
+    ]}
+  ]
+}

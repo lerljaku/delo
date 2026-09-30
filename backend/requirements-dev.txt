@@ -1,0 +1,4 @@
+# Runtime code only needs the standard library + boto3 (bundled in the Lambda runtime).
+# These are for running the AWS storage tests locally.
+boto3>=1.35
+moto[dynamodb,s3]>=5.0
