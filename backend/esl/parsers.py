@@ -250,14 +250,35 @@ def parse_eventlink(content: str) -> list[dict]:
                 f"got: {' | '.join(window)}"
             )
         if rnd >= 2 and table == 1 and all(rounds_of(r) == 1 for r in recs):
-            raise ParseError(f"{line}: a second event seems to start here (records restart at 1 match). "
-                             "Upload each event separately.")
+            raise SecondEventError(start_line)
         keys = {player_key(p1)} | ({player_key(p2)} if p2 else set())
         if rnd == 0 or keys & seen:
             rnd, seen = rnd + 1, set()
         seen |= keys
         matches.append(_raw_match(rnd, p1, p2, w1, w2, d, line))
     return matches
+
+
+class SecondEventError(ParseError):
+    def __init__(self, line_no: int):
+        super().__init__(f"line {line_no}: a second event seems to start here (records restart at 1 match). "
+                         "Upload each event separately.")
+        self.line_no = line_no
+
+
+def split_eventlink(content: str) -> list[str]:
+    """Split an Eventlink paste that contains several events into one text per event."""
+    parts: list[str] = []
+    lines = content.splitlines()
+    while True:
+        try:
+            parse_eventlink("\n".join(lines))
+        except SecondEventError as err:
+            parts.append("\n".join(lines[:err.line_no - 1]))
+            lines = lines[err.line_no - 1:]
+            continue
+        parts.append("\n".join(lines))
+        return parts
 
 
 def _looks_like_eventlink(content: str) -> bool:

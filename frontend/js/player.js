@@ -102,7 +102,7 @@ async function load() {
   try {
     const [p, h] = await Promise.all([api(`/players/${pid}`, { query: { ladder } }), api(`/players/${pid}/history`, { query: { ladder } })]);
     const s = p.stats;
-    document.title = `${p.displayName} · EloHell`;
+    document.title = `${p.displayName} · ESL`;
     content.innerHTML = `
       <h1 class="${p.hidden ? "hidden-name" : ""}">${esc(p.displayName)}${badge(p.membership)}</h1>
       <p class="secondary">Rank #${p.rank} of ${p.playerCount} · ${ladder === "rel" ? "REL" : "REL + Casual"} ladder</p>

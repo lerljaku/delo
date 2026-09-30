@@ -1,6 +1,6 @@
-# EloHell — Architecture
+# ESL — Architecture
 
-EloHell tracks Elo ratings for Magic: The Gathering players from tournament results
+ESL (Elo Scalp Lotion) tracks Elo ratings for Magic: The Gathering players from tournament results
 uploaded by admins. It is designed to run for (close to) **$0/month** on AWS at
 community scale.
 
@@ -199,7 +199,7 @@ JSON, so the rest of the pipeline is unchanged.
 ## 9. Repository layout
 
 ```
-backend/elohell/      Python package deployed as the Lambda
+backend/esl/          Python package deployed as the Lambda
   elo.py              rating model + constants
   parsers.py          upload formats → normalized tournament
   engine.py           replay tournaments → ladders, stats, history

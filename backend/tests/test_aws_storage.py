@@ -16,11 +16,11 @@ try:
 except ImportError:  # pragma: no cover
     mock_aws = None
 
-from test_elohell import ApiTests  # noqa: E402
+from test_esl import ApiTests  # noqa: E402
 
 ENV = {
     "AWS_DEFAULT_REGION": "eu-central-1", "AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test",
-    "DATA_BUCKET": "elohell-test-data", "TOURNAMENTS_TABLE": "t-tournaments", "PLAYERS_TABLE": "t-players",
+    "DATA_BUCKET": "esl-test-data", "TOURNAMENTS_TABLE": "t-tournaments", "PLAYERS_TABLE": "t-players",
     "ACCOUNTS_TABLE": "t-accounts", "RELEASE_NOTES_TABLE": "t-release-notes",
 }
 
@@ -54,7 +54,7 @@ def create_resources():
 @unittest.skipIf(mock_aws is None, "moto not installed")
 class AwsApiTests(ApiTests):
     def make_storage(self):
-        from elohell.storage import AwsStorage
+        from esl.storage import AwsStorage
 
         patcher = unittest.mock.patch.dict(os.environ, ENV)
         patcher.start()

@@ -19,10 +19,10 @@ terraform {
   # Remote state (recommended once more than one person deploys). Create the bucket
   # and lock table once by hand, then uncomment and run `terraform init -migrate-state`.
   # backend "s3" {
-  #   bucket         = "elohell-terraform-state-<account-id>"
+  #   bucket         = "esl-terraform-state-<account-id>"
   #   key            = "prod/terraform.tfstate"
   #   region         = "eu-central-1"
-  #   dynamodb_table = "elohell-terraform-locks"
+  #   dynamodb_table = "esl-terraform-locks"
   #   encrypt        = true
   # }
 }

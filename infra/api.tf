@@ -5,7 +5,7 @@ data "archive_file" "api" {
   type        = "zip"
   source_dir  = "${path.module}/../backend"
   output_path = "${path.module}/build/api.zip"
-  excludes    = ["tests", "local_server.py", "elohell/__pycache__", "tests/__pycache__", "__pycache__"]
+  excludes    = ["tests", "local_server.py", "esl/__pycache__", "tests/__pycache__", "__pycache__"]
 }
 
 resource "aws_iam_role" "api" {
@@ -61,7 +61,7 @@ resource "aws_lambda_function" "api" {
   role             = aws_iam_role.api.arn
   runtime          = "python3.13"
   architectures    = ["arm64"]
-  handler          = "elohell.api.lambda_handler"
+  handler          = "esl.api.lambda_handler"
   filename         = data.archive_file.api.output_path
   source_code_hash = data.archive_file.api.output_base64sha256
   memory_size      = 512

@@ -1,7 +1,7 @@
 variable "project" {
   description = "Project name, used as a prefix for all resources."
   type        = string
-  default     = "elohell"
+  default     = "esl"
 }
 
 variable "environment" {
@@ -19,7 +19,7 @@ variable "region" {
 variable "github_repo" {
   description = "GitHub repository URL used for 'Report an issue' links."
   type        = string
-  default     = "https://github.com/your-org/elohell"
+  default     = "https://github.com/your-org/esl"
 }
 
 variable "admin_emails" {

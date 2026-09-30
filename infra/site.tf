@@ -168,5 +168,5 @@ resource "aws_s3_object" "config" {
   key           = "config.js"
   content_type  = local.mime_types.js
   cache_control = "public, max-age=300"
-  content       = "window.ELOHELL_CONFIG = ${jsonencode(local.frontend_config)};\n"
+  content       = "window.ESL_CONFIG = ${jsonencode(local.frontend_config)};\n"
 }

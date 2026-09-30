@@ -19,7 +19,7 @@ async function detail() {
   const ladder = ladderFor(t.type);
   const name = (id) => t.players[id];
   const rounds = [...new Set(t.matches.map((m) => m.round))];
-  document.title = `${t.name} · EloHell`;
+  document.title = `${t.name} · ESL`;
   content.innerHTML = `
     <p><a href="tournaments.html">← All tournaments</a></p>
     <h1>${esc(t.name)} ${typeBadge(t.type)}</h1>

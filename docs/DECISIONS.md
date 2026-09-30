@@ -5,12 +5,13 @@ you decide differently.
 
 ## Name
 
-Working name: **EloHell** (from the brief). Alternatives:
+Name: **ESL — Elo Scalp Lotion**. EloHell (the working name from the brief) and
+ManaRank were already taken. Other alternatives considered:
 
 | Name | Notes |
 |------|-------|
-| EloHell | Memorable, self-deprecating ("stuck in Elo hell"); `elohell.gg` style domain |
-| ManaRank | Clear MTG + ranking association |
+| Elodrazi / Black Elotus / Force of Elo / Mox Elo | "Elo" + MTG card wordplay |
+| Swissboard / Tiebreaker / Grindboard | Tournament terms |
 | Planeswalker Ladder | Very MTG-flavoured (check Wizards trademark usage) |
 | Top8 Elo | Tournament-y |
 | The Stack Rank | MTG pun ("the stack") |
@@ -38,13 +39,13 @@ Working name: **EloHell** (from the brief). Alternatives:
 
 ## Open questions for you
 
-1. **Name & domain**: which name, and do you own a domain? (Custom domain needs an ACM
+1. **Domain**: do you own a domain for ESL? (Custom domain needs an ACM
    certificate in `us-east-1` and Route 53 or your DNS provider.)
-2. **Upload format**: answered by the files in `raw-data-eventlink/`. The `eventlink` parser imports 42 of
-   the 47 files. The other 5 (`dl.txt`, `Najada a rytir.txt`, `najada + rytir.txt`,
-   `najada + rytir3.6.txt`, `Vikend+najda+rytz.txt`) contain two events pasted into one file and
-   must be split. Is that expected? What are the dates, REL/casual types and exact names of these events? The
-   filenames only hint at them (e.g. `25.2. DC` = Duel Commander on 25 February, but which year?).
+2. **Event metadata**: all 47 files in `raw-data-eventlink/` import (52 events; `dl.txt`,
+   `Najada a rytir.txt`, `najada + rytir.txt`, `najada + rytir3.6.txt` hold two events and
+   `Vikend+najda+rytz.txt` three, split automatically by the local seed). Dates are guessed
+   from file names, assuming the current year, and 14 files have no date at all. All events
+   default to REL. The real names, dates and types go in `raw-data-eventlink/events.json`.
 3. **Leagues / seasons**: should ratings reset each season, or should we show a
    season leaderboard in addition to all-time?
 4. **Format split**: separate ladders per format (Modern, Commander, Limited…)? The

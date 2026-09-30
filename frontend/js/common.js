@@ -1,9 +1,9 @@
 // Shared helpers: config, auth (Cognito Hosted UI with PKCE, or fake local users), API, nav.
-export const CONFIG = window.ELOHELL_CONFIG || { apiBase: "/api", auth: { mode: "local" } };
+export const CONFIG = window.ESL_CONFIG || { apiBase: "/api", auth: { mode: "local" } };
 
-const TOKEN_KEY = "elohell.idToken";
-const DEV_USER_KEY = "elohell.devUser";
-const LADDER_KEY = "elohell.ladder";
+const TOKEN_KEY = "esl.idToken";
+const DEV_USER_KEY = "esl.devUser";
+const LADDER_KEY = "esl.ladder";
 
 export const HIDDEN_NAME = "Hidden player";
 
@@ -116,7 +116,7 @@ export async function login() {
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  sessionStorage.setItem("elohell.pkce", JSON.stringify({ verifier, state, returnTo: location.pathname + location.search }));
+  sessionStorage.setItem("esl.pkce", JSON.stringify({ verifier, state, returnTo: location.pathname + location.search }));
   const q = new URLSearchParams({
     response_type: "code", client_id: a.clientId, redirect_uri: a.redirectUri, scope: "openid email profile",
     code_challenge_method: "S256", code_challenge: challenge, state,
@@ -126,8 +126,8 @@ export async function login() {
 
 export async function completeLogin() {
   const a = CONFIG.auth;
-  const saved = JSON.parse(sessionStorage.getItem("elohell.pkce") || "{}");
-  sessionStorage.removeItem("elohell.pkce");
+  const saved = JSON.parse(sessionStorage.getItem("esl.pkce") || "{}");
+  sessionStorage.removeItem("esl.pkce");
   if (!param("code") || param("state") !== saved.state) throw new Error("Login failed: invalid state");
   const resp = await fetch(`${a.domain}/oauth2/token`, {
     method: "POST",
@@ -205,7 +205,7 @@ export function renderNav(active) {
 
   const nav = document.createElement("nav");
   nav.className = "topnav";
-  nav.innerHTML = `<div class="inner"><a class="brand" href="index.html">Elo<span>Hell</span></a>
+  nav.innerHTML = `<div class="inner"><a class="brand" href="index.html" title="Elo Scalp Lotion">E<span>SL</span></a>
     ${links.map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}</a>`).join("")}
     <span class="spacer"></span>${authBits}</div>`;
   document.body.prepend(nav);
@@ -218,7 +218,7 @@ export function renderNav(active) {
   nav.querySelector("#logout")?.addEventListener("click", (e) => { e.preventDefault(); logout(); });
 
   const footer = document.createElement("footer");
-  footer.innerHTML = `EloHell · unofficial fan project, not affiliated with Wizards of the Coast ·
+  footer.innerHTML = `ESL (Elo Scalp Lotion) · unofficial fan project, not affiliated with Wizards of the Coast ·
     <a href="${esc(CONFIG.githubRepo || "#")}/issues/new/choose" rel="noopener">Report an issue</a>`;
   document.body.append(footer);
 }

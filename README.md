@@ -1,4 +1,4 @@
-# EloHell
+# ESL — Elo Scalp Lotion
 
 Elo ratings for Magic: The Gathering players, calculated from tournament results that
 admins upload. There are two ladders, **REL** and **REL + Casual**. Each player gets a
@@ -25,8 +25,16 @@ standard library.
 python backend/local_server.py --seed      # Windows: py backend/local_server.py --seed
 ```
 
-Open http://127.0.0.1:8000. `--seed` loads `sample-data/` and the release notes. Data is
-stored in `.localdata/`; delete that folder to start over.
+Open http://127.0.0.1:8000. `--seed` loads the release notes and the tournaments in
+`raw-data-eventlink/` (real Eventlink pastes, kept out of git), or `sample-data/` if that
+folder doesn't exist. `--source DIR` picks another folder. Data is stored in `.localdata/`;
+delete that folder to start over.
+
+The first seed from `raw-data-eventlink/` writes `raw-data-eventlink/events.json` with the
+name, date and type of every event, guessed from the file names. Files that contain several
+events are split into `file.txt#1`, `file.txt#2`, … Entries with a `todo` line had no date
+in the file name. Fix them, set `"skip": true` to leave an event out, then delete
+`.localdata/` and seed again.
 
 Sign-in is faked locally. Use the **Dev user** menu in the top-right corner to act as an
 admin or as a regular player.
@@ -103,7 +111,7 @@ page without a deploy.
 
 ### Changing the Elo model
 
-1. Edit constants or logic in `backend/elohell/elo.py` or `engine.py`, bump
+1. Edit constants or logic in `backend/esl/elo.py` or `engine.py`, bump
    `MODEL_VERSION`, and update `docs/ELO.md`.
 2. `terraform apply`
 3. Admin page → **Recalculate everything**. All ratings are replayed from the stored
@@ -119,7 +127,7 @@ set `environment = "dev"` in a separate state or workspace.
 ### Custom domain (optional)
 
 1. Request an ACM certificate for the domain in **us-east-1**.
-2. In `infra/site.tf`, add `aliases = ["elohell.example"]` to the distribution and replace
+2. In `infra/site.tf`, add `aliases = ["esl.example"]` to the distribution and replace
    `viewer_certificate` with the ACM certificate ARN (`ssl_support_method = "sni-only"`).
 3. Update the Cognito callback and logout URLs in `infra/auth.tf` and the
    `redirectUri`/`logoutUri` values in `site.tf`.

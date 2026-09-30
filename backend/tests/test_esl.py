@@ -5,11 +5,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from elohell import engine  # noqa: E402
-from elohell.api import HIDDEN_NAME, App  # noqa: E402
-from elohell.elo import DEFAULT_CONFIG, expected_score, rate_match  # noqa: E402
-from elohell.parsers import ParseError, build_tournament, parse_text, player_id  # noqa: E402
-from elohell.storage import LocalStorage  # noqa: E402
+from esl import engine  # noqa: E402
+from esl.api import HIDDEN_NAME, App  # noqa: E402
+from esl.elo import DEFAULT_CONFIG, expected_score, rate_match  # noqa: E402
+from esl.parsers import (ParseError, build_tournament, parse_eventlink, parse_text, player_id,  # noqa: E402
+                         split_eventlink)
+from esl.storage import LocalStorage  # noqa: E402
 
 ADMIN = {"sub": "admin-1", "email": "admin@x", "cognito:groups": "[admin]"}
 USER = {"sub": "user-1", "email": "alice@x"}
@@ -142,6 +143,13 @@ class EventlinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ParseError, "second event"):
             build_tournament(content=EVENTLINK.replace("7\n", "") + second, name="x", date="2026-01-01", type="rel")
 
+    def test_split_events(self):
+        second = "1\nZed\n1–0–0\n20\nYan\n0–1–0\n"
+        parts = split_eventlink(EVENTLINK.replace("7\n", "") + second)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(len(parse_eventlink(parts[0])), 6)
+        self.assertEqual([m["p1"] for m in parse_eventlink(parts[1])], ["Zed"])
+
     def test_garbage_reports_line(self):
         with self.assertRaisesRegex(ParseError, "line 1"):
             build_tournament(content="1\nAlice\n1–0–0\nBob\nfoo\n1–0–0\n2–0–0", name="x", date="2026-01-01", type="rel", fmt="eventlink")
@@ -272,7 +280,7 @@ class ApiTests(unittest.TestCase):
 
 class LambdaHandlerTests(unittest.TestCase):
     def setUp(self):
-        from elohell import api
+        from esl import api
 
         self.api = api
         tmp = tempfile.TemporaryDirectory()
