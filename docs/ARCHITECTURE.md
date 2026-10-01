@@ -210,7 +210,6 @@ backend/local_server.py  run the whole site locally without AWS
 frontend/             static site (vanilla JS, Chart.js from CDN)
 infra/                Terraform
 docs/                 architecture, decisions, Elo docs, release notes
-sample-data/          example uploads
 ```
 
 ## 10. Scaling notes

@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars and adjust. terraform.tfvars is git-ignored.
 project      = "esl"
 environment  = "prod"
-region       = "eu-central-1"
-github_repo  = "https://github.com/your-org/esl"
-admin_emails = ["you@example.com"]
+region       = "eu-west-1"
+github_repo  = "https://github.com/lerljaku/esl"
+admin_emails = ["lerljaku@gmail.com"]

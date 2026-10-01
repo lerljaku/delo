@@ -1,4 +1,4 @@
 # Runtime code only needs the standard library + boto3 (bundled in the Lambda runtime).
-# These are for running the AWS storage tests locally.
+# These are for running the AWS storage and import tests locally, and for import_events.py --target aws.
 boto3>=1.35
-moto[dynamodb,s3]>=5.0
+moto[dynamodb,s3,lambda,iam]>=5.0

@@ -2,8 +2,8 @@
 
     py backend/local_server.py [--port 8000] [--data .localdata] [--seed [--source DIR]]
 
---seed loads raw-data-eventlink/ (Eventlink pastes, metadata in its events.json, which is
-generated with guesses from the file names on first run) or sample-data/ if that folder is missing.
+--seed loads the release notes and the Eventlink pastes in raw-data-eventlink/ (or --source)
+using import_events.py, which explains events.json.
 
 Authentication is faked: the frontend sends an `X-Dev-User` header
 ("admin" or "user:<email>") which is turned into Cognito-like claims.
@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-from datetime import date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
@@ -23,11 +21,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 from esl.api import App  # noqa: E402
-from esl.parsers import split_eventlink  # noqa: E402
 from esl.storage import LocalStorage  # noqa: E402
-
-RAW_DATA = ROOT / "raw-data-eventlink"
-MANIFEST = "events.json"
+from import_events import RAW_DATA, import_events  # noqa: E402
 
 LOCAL_CONFIG = """window.ESL_CONFIG = {
   apiBase: "/api",
@@ -95,80 +90,12 @@ def make_handler(app: App):
     return Handler
 
 
-def guess_date(stem: str, year: int) -> str | None:
-    """Day and month from names like '29.1. DC', 'Najada_10.2', 'gdc25_04', 'najada1606', 'dc176'."""
-    candidates = []
-    if m := re.search(r"(?<!\d)(\d{1,2})[._](\d{1,2})(?!\d)", stem):
-        candidates.append((m.group(1), m.group(2)))
-    elif m := re.search(r"(?<!\d)(\d\d)(\d\d)(?!\d)", stem):
-        candidates.append((m.group(1), m.group(2)))
-    elif m := re.search(r"(?<!\d)(\d)(\d)(\d)(?!\d)", stem):
-        candidates += [(m.group(1) + m.group(2), m.group(3)), (m.group(1), m.group(2) + m.group(3))]
-    for day, month in candidates:
-        try:
-            return date(year, int(month), int(day)).isoformat()
-        except ValueError:
-            continue
-    return None
-
-
-def build_manifest(source: Path, year: int) -> dict:
-    """One entry per event; files with several events pasted together get 'file#1', 'file#2', ..."""
-    manifest = {}
-    for path in sorted(source.glob("*.txt")):
-        parts = split_eventlink(path.read_text("utf-8-sig"))
-        guessed = guess_date(path.stem, year)
-        for n in range(1, len(parts) + 1):
-            key = path.name if len(parts) == 1 else f"{path.name}#{n}"
-            entry = {"name": path.stem.strip() if len(parts) == 1 else f"{path.stem.strip()} ({n})",
-                     "date": guessed or f"{year}-01-01", "type": "rel"}
-            if not guessed:
-                entry["todo"] = "date not found in the file name, set it and delete this line"
-            manifest[key] = entry
-    return manifest
-
-
-def seed_events(app: App, source: Path, claims: dict) -> None:
-    """Upload Eventlink pastes from `source`, with names/dates/types from source/events.json."""
-    manifest_path = source / MANIFEST
-    if not manifest_path.exists():
-        manifest_path.write_text(json.dumps(build_manifest(source, date.today().year), indent=2, ensure_ascii=False),
-                                 "utf-8")
-        print(f"wrote {manifest_path}: check the guessed names, dates and types there")
-    manifest = json.loads(manifest_path.read_text("utf-8-sig"))
-    for path in sorted(source.glob("*.txt")):
-        parts = split_eventlink(path.read_text("utf-8-sig"))
-        for n, content in enumerate(parts, start=1):
-            key = path.name if len(parts) == 1 else f"{path.name}#{n}"
-            meta = manifest.get(key)
-            if meta is None or meta.get("skip"):
-                print(f"seed {key}: skipped ({'not in ' + MANIFEST if meta is None else 'skip'})")
-                continue
-            if "todo" in meta:
-                print(f"seed {key}: warning, {meta['todo']}")
-            body = {"content": content, "format": "eventlink",
-                    **{k: meta[k] for k in ("name", "date", "type") if k in meta}}
-            status, payload = app.handle("POST", "/api/tournaments", {}, body, claims)
-            print(f"seed {key}: {status} {payload.get('error') or payload.get('tournamentId')}")
-
-
-def seed_samples(app: App, source: Path, claims: dict) -> None:
-    for path in sorted(source.glob("*")):
-        if path.suffix not in (".csv", ".json", ".txt"):
-            continue
-        meta_path = path.with_suffix(path.suffix + ".meta")
-        meta = json.loads(meta_path.read_text("utf-8-sig")) if meta_path.exists() else {}
-        body = {"content": path.read_text("utf-8-sig"), **meta}
-        status, payload = app.handle("POST", "/api/tournaments", {}, body, claims)
-        print(f"seed {path.name}: {status} {payload.get('error') or payload.get('tournamentId')}")
-
-
 def seed(app: App, source: Path) -> None:
     claims = dev_claims("admin")
-    if source.name == "sample-data":
-        seed_samples(app, source, claims)
+    if source.is_dir():
+        import_events(app.storage, source, uploaded_by=claims["email"])
     else:
-        seed_events(app, source, claims)
+        print(f"no tournaments seeded: {source} does not exist")
     for path in sorted((ROOT / "docs" / "release-notes").glob("*.md")):
         text = path.read_text("utf-8-sig")
         header, _, body = text.partition("\n---\n")
@@ -182,14 +109,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--data", default=str(ROOT / ".localdata"))
-    parser.add_argument("--seed", action="store_true",
-                        help="load tournaments (raw-data-eventlink/ if present, else sample-data/) and release notes")
-    parser.add_argument("--source", help="folder to seed tournaments from")
+    parser.add_argument("--seed", action="store_true", help="load tournaments and release notes")
+    parser.add_argument("--source", default=str(RAW_DATA), help="folder of Eventlink pastes to seed from")
     args = parser.parse_args()
     app = App(LocalStorage(args.data))
     if args.seed:
-        source = Path(args.source) if args.source else RAW_DATA if RAW_DATA.is_dir() else ROOT / "sample-data"
-        seed(app, source.resolve())
+        seed(app, Path(args.source).resolve())
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     print(f"ESL running at http://127.0.0.1:{args.port}  (data: {args.data})")
     server.serve_forever()

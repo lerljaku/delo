@@ -5,7 +5,7 @@ data "archive_file" "api" {
   type        = "zip"
   source_dir  = "${path.module}/../backend"
   output_path = "${path.module}/build/api.zip"
-  excludes    = ["tests", "local_server.py", "esl/__pycache__", "tests/__pycache__", "__pycache__"]
+  excludes    = ["tests", "local_server.py", "import_events.py", "esl/__pycache__", "tests/__pycache__", "__pycache__"]
 }
 
 resource "aws_iam_role" "api" {

@@ -13,7 +13,6 @@ backend/     Python API (one AWS Lambda), local dev server, tests
 frontend/    static site (plain HTML + JS, no build step)
 infra/       Terraform: S3, CloudFront, API Gateway, Lambda, DynamoDB, Cognito
 docs/        architecture, Elo docs, release notes (deployed to the Docs page)
-sample-data/ example tournament uploads in every supported format
 ```
 
 ## Run locally (no AWS needed)
@@ -26,15 +25,17 @@ python backend/local_server.py --seed      # Windows: py backend/local_server.py
 ```
 
 Open http://127.0.0.1:8000. `--seed` loads the release notes and the tournaments in
-`raw-data-eventlink/` (real Eventlink pastes, kept out of git), or `sample-data/` if that
-folder doesn't exist. `--source DIR` picks another folder. Data is stored in `.localdata/`;
-delete that folder to start over.
+`raw-data-eventlink/`: real Eventlink pastes, one `.txt` file per event. The folder is kept
+out of git because it contains players' names, so on a fresh clone create it and add your
+own exports, or seed from another folder with `--source DIR`. Data is stored in
+`.localdata/`; delete that folder to start over.
 
-The first seed from `raw-data-eventlink/` writes `raw-data-eventlink/events.json` with the
+The first seed writes `raw-data-eventlink/events.json` with the
 name, date and type of every event, guessed from the file names. Files that contain several
 events are split into `file.txt#1`, `file.txt#2`, … Entries with a `todo` line had no date
-in the file name. Fix them, set `"skip": true` to leave an event out, then delete
-`.localdata/` and seed again.
+in the file name. Fix them, set `"skip": true` to leave an event out, then reload with
+`py backend/import_events.py --target local --replace` (or delete `.localdata/` and seed
+again).
 
 Sign-in is faked locally. Use the **Dev user** menu in the top-right corner to act as an
 admin or as a regular player.
@@ -81,6 +82,26 @@ Outputs:
 Each email in `admin_emails` gets an invitation with a temporary password. Sign in on the
 site (Account → Sign in) and set a new password. Admins see **Upload** and **Admin** in the
 navigation.
+
+### Importing tournament data
+
+`backend/import_events.py` loads every Eventlink paste in `raw-data-eventlink/` into the
+deployed S3 bucket and DynamoDB tables, then recalculates Elo once. It needs Python, the
+dev requirements and AWS credentials. It finds the table and bucket names in the deployed
+Lambda's settings (`terraform output lambda_function`, `esl-prod-api` by default).
+
+```bash
+pip install -r backend/requirements-dev.txt
+python backend/import_events.py --target aws --dry-run     # parse and list, store nothing
+python backend/import_events.py --target aws               # import
+```
+
+Event names, dates and types come from `raw-data-eventlink/events.json`, as described in
+[Run locally](#run-locally-no-aws-needed). Events that are already stored are skipped, so
+running it again only adds new files. After changing a date, name or type, run it with
+`--replace`: this **deletes every tournament** in the stack, including ones uploaded through
+the website, and imports the folder again. Other options: `--function`, `--profile`,
+`--region`, `--source DIR`, and `--target local` for `.localdata/`.
 
 ### Updating
 
@@ -148,7 +169,7 @@ versions, or destroy fails. **This deletes all tournament data.** Download
 
 ## Upload formats
 
-Supported: pairings copied from Eventlink/Companion (the format of the files in `raw-data-eventlink/`), CSV, JSON and simple `Alice vs Bob 2-1` pairings. The format is documented on the site's Docs
-page, and `sample-data/` has an example of each. Player names must be spelled
+Supported: pairings copied from Eventlink/Companion (the format of the files in `raw-data-eventlink/`), CSV, JSON and simple `Alice vs Bob 2-1` pairings. Each format is documented with an example on the site's Docs
+page. Player names must be spelled
 consistently across tournaments; the upload preview lists new players so typos are easy
 to catch.

@@ -13,13 +13,13 @@ variable "environment" {
 variable "region" {
   description = "AWS region for everything except CloudFront (global)."
   type        = string
-  default     = "eu-central-1"
+  default     = "eu-west-1"
 }
 
 variable "github_repo" {
   description = "GitHub repository URL used for 'Report an issue' links."
   type        = string
-  default     = "https://github.com/your-org/esl"
+  default     = "https://github.com/lerljaku/esl"
 }
 
 variable "admin_emails" {

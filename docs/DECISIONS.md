@@ -41,9 +41,9 @@ ManaRank were already taken. Other alternatives considered:
 
 1. **Domain**: do you own a domain for ESL? (Custom domain needs an ACM
    certificate in `us-east-1` and Route 53 or your DNS provider.)
-2. **Event metadata**: all 47 files in `raw-data-eventlink/` import (52 events; `dl.txt`,
+2. **Event metadata**: all 47 files in `raw-data-eventlink/` import (53 events; `dl.txt`,
    `Najada a rytir.txt`, `najada + rytir.txt`, `najada + rytir3.6.txt` hold two events and
-   `Vikend+najda+rytz.txt` three, split automatically by the local seed). Dates are guessed
+   `Vikend+najda+rytz.txt` three, split automatically by `backend/import_events.py`). Dates are guessed
    from file names, assuming the current year, and 14 files have no date at all. All events
    default to REL. The real names, dates and types go in `raw-data-eventlink/events.json`.
 3. **Leagues / seasons**: should ratings reset each season, or should we show a
