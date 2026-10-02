@@ -23,8 +23,8 @@ resource "aws_cognito_user_pool" "users" {
 
   verification_message_template {
     default_email_option = "CONFIRM_WITH_CODE"
-    email_subject        = "Your ESL verification code"
-    email_message        = "Your ESL verification code is {####}"
+    email_subject        = "Your Delo verification code"
+    email_message        = "Your Delo verification code is {####}"
   }
 
   # Cognito's built-in email sender allows ~50 emails/day. Switch to SES
@@ -44,8 +44,8 @@ resource "aws_cognito_user_pool_client" "web" {
   allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
   supported_identity_providers         = ["COGNITO"]
-  callback_urls                        = ["https://${aws_cloudfront_distribution.site.domain_name}/callback.html"]
-  logout_urls                          = ["https://${aws_cloudfront_distribution.site.domain_name}/index.html"]
+  callback_urls                        = [for h in distinct([aws_cloudfront_distribution.site.domain_name, local.site_host]) : "https://${h}/callback.html"]
+  logout_urls                          = [for h in distinct([aws_cloudfront_distribution.site.domain_name, local.site_host]) : "https://${h}/index.html"]
   id_token_validity                    = 12
   access_token_validity                = 12
   token_validity_units {

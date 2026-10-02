@@ -72,6 +72,7 @@ resource "aws_cloudfront_distribution" "site" {
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
   comment             = local.name
+  aliases             = local.site_aliases
 
   origin {
     origin_id                = "site"
@@ -97,6 +98,14 @@ resource "aws_cloudfront_distribution" "site" {
     cached_methods         = ["GET", "HEAD"]
     cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
     compress               = true
+
+    dynamic "function_association" {
+      for_each = aws_cloudfront_function.www_redirect
+      content {
+        event_type   = "viewer-request"
+        function_arn = function_association.value.arn
+      }
+    }
   }
 
   ordered_cache_behavior {
@@ -116,9 +125,12 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
-  # Custom domain: add `aliases` and an ACM certificate from us-east-1 here.
+  # Custom domain: see dns.tf.
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = !local.custom_domain
+    acm_certificate_arn            = local.custom_domain ? aws_acm_certificate_validation.site[0].certificate_arn : null
+    ssl_support_method             = local.custom_domain ? "sni-only" : null
+    minimum_protocol_version       = local.custom_domain ? "TLSv1.2_2021" : "TLSv1"
   }
 }
 
@@ -151,14 +163,17 @@ resource "aws_s3_object" "frontend" {
 
 locals {
   frontend_config = {
-    apiBase    = "/api"
-    githubRepo = var.github_repo
+    apiBase        = "/api"
+    githubRepo     = var.github_repo
+    operatorName   = var.operator_name
+    privacyContact = var.privacy_contact
+    dataRegion     = var.region
     auth = {
       mode        = "cognito"
       domain      = "https://${aws_cognito_user_pool_domain.users.domain}.auth.${var.region}.amazoncognito.com"
       clientId    = aws_cognito_user_pool_client.web.id
-      redirectUri = "https://${aws_cloudfront_distribution.site.domain_name}/callback.html"
-      logoutUri   = "https://${aws_cloudfront_distribution.site.domain_name}/index.html"
+      redirectUri = "https://${local.site_host}/callback.html"
+      logoutUri   = "https://${local.site_host}/index.html"
     }
   }
 }
@@ -168,5 +183,5 @@ resource "aws_s3_object" "config" {
   key           = "config.js"
   content_type  = local.mime_types.js
   cache_control = "public, max-age=300"
-  content       = "window.ESL_CONFIG = ${jsonencode(local.frontend_config)};\n"
+  content       = "window.DELO_CONFIG = ${jsonencode(local.frontend_config)};\n"
 }

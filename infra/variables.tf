@@ -1,7 +1,7 @@
 variable "project" {
   description = "Project name, used as a prefix for all resources."
   type        = string
-  default     = "esl"
+  default     = "delo"
 }
 
 variable "environment" {
@@ -14,6 +14,24 @@ variable "region" {
   description = "AWS region for everything except CloudFront (global)."
   type        = string
   default     = "eu-west-1"
+}
+
+variable "domain_name" {
+  description = "Custom domain for the site, e.g. mtgdelo.com (www redirects to it). Needs a Route 53 hosted zone for the domain, which Route 53 creates when you register it there. Empty: use the *.cloudfront.net address."
+  type        = string
+  default     = ""
+}
+
+variable "operator_name" {
+  description = "Who runs the site (person or organisation), named as data controller on the privacy page."
+  type        = string
+  default     = ""
+}
+
+variable "privacy_contact" {
+  description = "Email for privacy requests (access, removal of your name from results), shown on the privacy page."
+  type        = string
+  default     = ""
 }
 
 variable "github_repo" {

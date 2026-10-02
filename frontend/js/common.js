@@ -1,11 +1,17 @@
 // Shared helpers: config, auth (Cognito Hosted UI with PKCE, or fake local users), API, nav.
-export const CONFIG = window.ESL_CONFIG || { apiBase: "/api", auth: { mode: "local" } };
+export const CONFIG = window.DELO_CONFIG || { apiBase: "/api", auth: { mode: "local" } };
 
-const TOKEN_KEY = "esl.idToken";
-const DEV_USER_KEY = "esl.devUser";
-const LADDER_KEY = "esl.ladder";
+const TOKEN_KEY = "delo.idToken";
+const DEV_USER_KEY = "delo.devUser";
+const LADDER_KEY = "delo.ladder";
+const FORMAT_KEY = "delo.format";
 
 export const HIDDEN_NAME = "Hidden player";
+// Same ids as GAME_FORMATS in backend/delo/elo.py. "" = all formats (global leaderboard).
+export const GAME_FORMATS = {
+  modern: "Modern", limited: "Limited", "duel-commander": "Duel Commander", edh: "EDH",
+  legacy: "Legacy", vintage: "Vintage", premodern: "Premodern",
+};
 
 // ---------------------------------------------------------------- formatting
 export function esc(value) {
@@ -27,11 +33,19 @@ export function badge(membership) {
 export function typeBadge(type) {
   return `<span class="badge type-${esc(type)}">${type === "rel" ? "REL" : "Casual"}</span>`;
 }
-export function playerLink(id, name, ladder) {
+export function formatBadge(format) {
+  return format ? `<span class="badge format">${esc(GAME_FORMATS[format] || format)}</span>` : "";
+}
+export function playerLink(id, name, ladder, format) {
   if (!id) return '<span class="muted">BYE</span>';
   const cls = name === HIDDEN_NAME ? ' class="hidden-name"' : "";
-  return `<a${cls} href="player.html?id=${encodeURIComponent(id)}&ladder=${encodeURIComponent(ladder || getLadder())}">${esc(name)}</a>`;
+  // format is always in the URL: without it the player page falls back to the saved format
+  const q = new URLSearchParams({ id, ladder: ladder || getLadder(), format: format ?? getFormat() });
+  return `<a${cls} href="player.html?${q}">${esc(name)}</a>`;
 }
+// Opens in a new tab; hrefs come from the API, which only accepts http(s) links.
+export const externalLink = (url, label) =>
+  /^https?:\/\//.test(url || "") ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer nofollow">${esc(label || url)}</a>` : "";
 export const resultCell = (r) => `<span class="res-${esc(r)}">${esc(r)}</span>`;
 export const param = (name) => new URLSearchParams(location.search).get(name);
 
@@ -45,6 +59,32 @@ export function setLadder(ladder) {
   const url = new URL(location.href);
   url.searchParams.set("ladder", ladder);
   history.replaceState(null, "", url);
+}
+
+export function getFormat() {
+  const fromUrl = param("format");
+  if (fromUrl !== null) return Object.hasOwn(GAME_FORMATS, fromUrl) ? fromUrl : "";
+  const saved = localStorage.getItem(FORMAT_KEY) || "";
+  return Object.hasOwn(GAME_FORMATS, saved) ? saved : "";
+}
+export function setFormat(format) {
+  localStorage.setItem(FORMAT_KEY, format);
+  const url = new URL(location.href);
+  url.searchParams.set("format", format);
+  history.replaceState(null, "", url);
+}
+export const ladderLabel = (ladder, format) =>
+  `${format ? `${GAME_FORMATS[format]} · ` : ""}${ladder === "rel" ? "REL" : "REL + Casual"}`;
+
+// All formats / Modern / ... select. Calls onChange(format).
+export function formatSelect(container, onChange) {
+  const current = getFormat();
+  container.innerHTML = `<select aria-label="Format"><option value="">All formats</option>${Object.entries(GAME_FORMATS)
+    .map(([id, label]) => `<option value="${id}" ${id === current ? "selected" : ""}>${label}</option>`).join("")}</select>`;
+  container.querySelector("select").addEventListener("change", (e) => {
+    setFormat(e.target.value);
+    onChange(e.target.value);
+  });
 }
 
 // Segmented REL / REL + Casual control. Calls onChange(ladder).
@@ -116,7 +156,7 @@ export async function login() {
   const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
   const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  sessionStorage.setItem("esl.pkce", JSON.stringify({ verifier, state, returnTo: location.pathname + location.search }));
+  sessionStorage.setItem("delo.pkce", JSON.stringify({ verifier, state, returnTo: location.pathname + location.search }));
   const q = new URLSearchParams({
     response_type: "code", client_id: a.clientId, redirect_uri: a.redirectUri, scope: "openid email profile",
     code_challenge_method: "S256", code_challenge: challenge, state,
@@ -126,8 +166,8 @@ export async function login() {
 
 export async function completeLogin() {
   const a = CONFIG.auth;
-  const saved = JSON.parse(sessionStorage.getItem("esl.pkce") || "{}");
-  sessionStorage.removeItem("esl.pkce");
+  const saved = JSON.parse(sessionStorage.getItem("delo.pkce") || "{}");
+  sessionStorage.removeItem("delo.pkce");
   if (!param("code") || param("state") !== saved.state) throw new Error("Login failed: invalid state");
   const resp = await fetch(`${a.domain}/oauth2/token`, {
     method: "POST",
@@ -205,7 +245,7 @@ export function renderNav(active) {
 
   const nav = document.createElement("nav");
   nav.className = "topnav";
-  nav.innerHTML = `<div class="inner"><a class="brand" href="index.html" title="Elo Scalp Lotion">E<span>SL</span></a>
+  nav.innerHTML = `<div class="inner"><a class="brand" href="index.html" title="Delo">D<span>elo</span></a>
     ${links.map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}</a>`).join("")}
     <span class="spacer"></span>${authBits}</div>`;
   document.body.prepend(nav);
@@ -218,7 +258,8 @@ export function renderNav(active) {
   nav.querySelector("#logout")?.addEventListener("click", (e) => { e.preventDefault(); logout(); });
 
   const footer = document.createElement("footer");
-  footer.innerHTML = `ESL (Elo Scalp Lotion) · unofficial fan project, not affiliated with Wizards of the Coast ·
+  footer.innerHTML = `Delo · unofficial fan project, not affiliated with Wizards of the Coast ·
+    <a href="privacy.html">Privacy</a> ·
     <a href="${esc(CONFIG.githubRepo || "#")}/issues/new/choose" rel="noopener">Report an issue</a>`;
   document.body.append(footer);
 }

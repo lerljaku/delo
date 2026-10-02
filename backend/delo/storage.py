@@ -10,10 +10,11 @@ import threading
 from decimal import Decimal
 from pathlib import Path
 
-from .elo import LADDERS
+from .elo import LADDER_IDS
 
 PROFILE_FIELDS = ("displayName", "hidden", "membership", "ownerSub")
 SUMMARY_FIELDS = ("matches", "wins", "losses", "draws", "winrate", "peakRating")
+TOURNAMENT_FIELDS = ("format", "link")  # editable after upload
 
 
 def _ladder_item(pid: str, ladder: str, entry: dict, name: str, profile: dict) -> dict:
@@ -27,6 +28,7 @@ def _ladder_item(pid: str, ladder: str, entry: dict, name: str, profile: dict) -
         "summary": {k: entry["stats"][k] for k in SUMMARY_FIELDS},
         "stats": entry["stats"],
         "tournaments": entry["tournaments"],
+        "state": entry["state"],
     }
 
 
@@ -50,6 +52,7 @@ class LocalStorage:
             self._db = {"tournaments": {}, "profiles": {}, "ladders": {}, "history": {},
                         "accounts": {}, "releaseNotes": {}}
             self._save()
+        self._db.setdefault("erased", [])
 
     def _save(self) -> None:
         tmp = self._db_path.with_suffix(".tmp")
@@ -61,8 +64,9 @@ class LocalStorage:
         with self._lock:
             (self.root / "raw" / f"{t['id']}.{raw_ext}").write_text(raw_content, "utf-8")
             (self.root / "tournaments" / f"{t['id']}.json").write_text(json.dumps(t), "utf-8")
+            decks = self._db["tournaments"].get(t["id"], {}).get("decks")
             self._db["tournaments"][t["id"]] = tournament_meta(t, f"tournaments/{t['id']}.json",
-                                                               f"raw/{t['id']}.{raw_ext}")
+                                                               f"raw/{t['id']}.{raw_ext}", decks)
             self._save()
 
     def delete_tournament(self, tid: str) -> bool:
@@ -84,24 +88,86 @@ class LocalStorage:
             return None
         return json.loads((self.root / meta["s3Key"]).read_text("utf-8"))
 
+    def update_tournament(self, tid: str, **fields) -> dict | None:
+        with self._lock:
+            t = self.get_tournament(tid)
+            if not t:
+                return None
+            t.update({k: v for k, v in fields.items() if k in TOURNAMENT_FIELDS})
+            meta = self._db["tournaments"][tid]
+            (self.root / meta["s3Key"]).write_text(json.dumps(t), "utf-8")
+            self._db["tournaments"][tid] = tournament_meta(t, meta["s3Key"], meta["rawKey"], meta.get("decks"))
+            self._save()
+            return t
+
     def load_all_tournaments(self) -> list[dict]:
         return [self.get_tournament(tid) for tid in list(self._db["tournaments"])]
 
+    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
+        """Set (or with None remove) the deck a player played in a tournament."""
+        with self._lock:
+            meta = self._db["tournaments"].get(tid)
+            if not meta:
+                return False
+            decks = meta.setdefault("decks", {})
+            if deck:
+                decks[pid] = deck
+            else:
+                decks.pop(pid, None)
+            self._save()
+            return True
+
+    def get_raw(self, tid: str) -> tuple[str, str] | None:
+        """(raw upload, file extension)."""
+        meta = self._db["tournaments"].get(tid)
+        if not meta:
+            return None
+        return (self.root / meta["rawKey"]).read_text("utf-8"), meta["rawKey"].rsplit(".", 1)[-1]
+
+    def replace_tournament(self, t: dict, raw_content: str, raw_ext: str) -> None:
+        """Overwrite a stored tournament and its raw upload, leaving no copy of the old content."""
+        with self._lock:
+            old_raw = self._db["tournaments"][t["id"]]["rawKey"]
+            self.save_tournament(t, raw_content, raw_ext)
+            if old_raw != self._db["tournaments"][t["id"]]["rawKey"]:
+                (self.root / old_raw).unlink(missing_ok=True)
+
+    # --- erasure -------------------------------------------------------------
+    def delete_player(self, pid: str) -> None:
+        """Remove the profile and all derived ratings of a player."""
+        with self._lock:
+            self._db["profiles"].pop(pid, None)
+            for section in ("ladders", "history"):
+                for ladder in self._db[section].values():
+                    ladder.pop(pid, None)
+            self._save()
+
+    def add_erased(self, pid: str) -> None:
+        with self._lock:
+            if pid not in self._db["erased"]:
+                self._db["erased"].append(pid)
+                self._save()
+
+    def erased_ids(self, pids) -> set[str]:
+        return set(pids) & set(self._db["erased"])
+
     # --- derived ratings ---------------------------------------------------
-    def write_results(self, result: dict) -> None:
+    def write_results(self, result: dict, incremental: bool = False) -> None:
+        """Store engine output. Full results replace every ladder; incremental ones (from
+        engine.apply_tournament) overwrite the players they contain and append their history."""
         with self._lock:
             profiles = self._db["profiles"]
             for pid, name in result["names"].items():
-                profiles.setdefault(pid, {"hidden": False, "membership": "", "ownerSub": ""})["displayName"] = name
-            self._db["ladders"] = {
-                ladder: {pid: _ladder_item(pid, ladder, e, result["names"][pid], profiles[pid])
-                         for pid, e in entries.items()}
-                for ladder, entries in result["ladders"].items()
-            }
-            self._db["history"] = {
-                ladder: {pid: e["history"] for pid, e in entries.items()}
-                for ladder, entries in result["ladders"].items()
-            }
+                prof = profiles.setdefault(pid, {"hidden": False, "membership": "", "ownerSub": ""})
+                prof.update(displayName=name, spellings=result["spellings"][pid])
+            if not incremental:
+                self._db["ladders"], self._db["history"] = {}, {}
+            for ladder, entries in result["ladders"].items():
+                items = self._db["ladders"].setdefault(ladder, {})
+                history = self._db["history"].setdefault(ladder, {})
+                for pid, e in entries.items():
+                    items[pid] = _ladder_item(pid, ladder, e, profiles[pid]["displayName"], profiles[pid])
+                    history.setdefault(pid, []).extend(e["history"])
             self._save()
 
     def leaderboard(self, ladder: str) -> list[dict]:
@@ -110,6 +176,12 @@ class LocalStorage:
 
     def get_ladder_entry(self, pid: str, ladder: str) -> dict | None:
         return copy.deepcopy(self._db["ladders"].get(ladder, {}).get(pid))
+
+    def get_ladder_entries(self, ladders, pids) -> dict[str, dict[str, dict]]:
+        """{ladder: {playerId: entry}} for the given players that have an entry."""
+        pids = set(pids)
+        return {l: copy.deepcopy({p: e for p, e in self._db["ladders"].get(l, {}).items() if p in pids})
+                for l in ladders}
 
     def get_history(self, pid: str, ladder: str) -> list[dict]:
         return copy.deepcopy(self._db["history"].get(ladder, {}).get(pid, []))
@@ -142,6 +214,14 @@ class LocalStorage:
     def list_accounts(self, claim_status: str | None = None) -> list[dict]:
         return [copy.deepcopy(a) for a in self._db["accounts"].values() if claim_status in (None, a.get("claimStatus"))]
 
+    def delete_account(self, sub: str) -> None:
+        with self._lock:
+            self._db["accounts"].pop(sub, None)
+            self._save()
+
+    def delete_login(self, username: str) -> None:
+        """Local development has no login directory (users are faked by local_server.py)."""
+
     # --- release notes -----------------------------------------------------
     def list_release_notes(self) -> list[dict]:
         return sorted((dict(r) for r in self._db["releaseNotes"].values()), key=lambda r: r["date"], reverse=True)
@@ -160,12 +240,14 @@ class LocalStorage:
             self._save()
 
 
-def tournament_meta(t: dict, s3_key: str, raw_key: str) -> dict:
+def tournament_meta(t: dict, s3_key: str, raw_key: str, decks: dict | None = None) -> dict:
+    """Tournament table item. decks ({playerId: deck name}) are set by players after the upload
+    and don't affect ratings, so they live only here, not in the tournament JSON."""
     return {
         "tournamentId": t["id"], "name": t["name"], "date": t["date"], "type": t["type"],
-        "sourceFormat": t["sourceFormat"], "uploadedAt": t["uploadedAt"], "uploadedBy": t["uploadedBy"],
+        "format": t.get("format"), "link": t.get("link"), "sourceFormat": t["sourceFormat"], "uploadedAt": t["uploadedAt"], "uploadedBy": t["uploadedBy"],
         "playerCount": len(t["players"]), "matchCount": sum(1 for m in t["matches"] if m["p2"]),
-        "s3Key": s3_key, "rawKey": raw_key,
+        "s3Key": s3_key, "rawKey": raw_key, "decks": decks or {},
     }
 
 
@@ -228,7 +310,8 @@ class AwsStorage:
         s3_key, raw_key = f"tournaments/{t['id']}.json", f"raw/{t['id']}.{raw_ext}"
         self._put_s3(raw_key, raw_content, "text/plain")
         self._put_s3(s3_key, json.dumps(t), "application/json")
-        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, s3_key, raw_key)))
+        old = self.tournaments.get_item(Key={"tournamentId": t["id"]}).get("Item") or {}
+        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, s3_key, raw_key, _from_ddb(old.get("decks")))))
 
     def delete_tournament(self, tid: str) -> bool:
         meta = self.tournaments.get_item(Key={"tournamentId": tid}).get("Item")
@@ -247,25 +330,100 @@ class AwsStorage:
         meta = self.tournaments.get_item(Key={"tournamentId": tid}).get("Item")
         return json.loads(self._get_s3(meta["s3Key"])) if meta else None
 
+    def update_tournament(self, tid: str, **fields) -> dict | None:
+        meta = self.tournaments.get_item(Key={"tournamentId": tid}).get("Item")
+        if not meta:
+            return None
+        t = json.loads(self._get_s3(meta["s3Key"]))
+        t.update({k: v for k, v in fields.items() if k in TOURNAMENT_FIELDS})
+        self._put_s3(meta["s3Key"], json.dumps(t), "application/json")
+        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, meta["s3Key"], meta["rawKey"],
+                                                               _from_ddb(meta.get("decks")))))
+        return t
+
+    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
+        from botocore.exceptions import ClientError
+
+        key = {"tournamentId": tid}
+        try:  # a nested path can only be set once the map exists
+            self.tournaments.update_item(Key=key, UpdateExpression="SET decks = if_not_exists(decks, :e)",
+                                         ExpressionAttributeValues={":e": {}},
+                                         ConditionExpression="attribute_exists(tournamentId)")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        if deck:
+            self.tournaments.update_item(Key=key, UpdateExpression="SET decks.#p = :d",
+                                         ExpressionAttributeNames={"#p": pid}, ExpressionAttributeValues={":d": deck})
+        else:
+            self.tournaments.update_item(Key=key, UpdateExpression="REMOVE decks.#p",
+                                         ExpressionAttributeNames={"#p": pid})
+        return True
+
     def load_all_tournaments(self) -> list[dict]:
         return [json.loads(self._get_s3(m["s3Key"])) for m in self._scan_all(self.tournaments)]
 
+    def get_raw(self, tid: str) -> tuple[str, str] | None:
+        meta = self.tournaments.get_item(Key={"tournamentId": tid}).get("Item")
+        if not meta:
+            return None
+        return self._get_s3(meta["rawKey"]), meta["rawKey"].rsplit(".", 1)[-1]
+
+    def _purge_versions(self, key: str, keep_latest: bool = True) -> None:
+        """The data bucket is versioned: delete old versions so overwritten content is really gone."""
+        for page in self.s3.get_paginator("list_object_versions").paginate(Bucket=self.bucket, Prefix=key):
+            for v in page.get("Versions", []) + page.get("DeleteMarkers", []):
+                if v["Key"] == key and not (keep_latest and v["IsLatest"]):
+                    self.s3.delete_object(Bucket=self.bucket, Key=key, VersionId=v["VersionId"])
+
+    def replace_tournament(self, t: dict, raw_content: str, raw_ext: str) -> None:
+        old_raw = self.tournaments.get_item(Key={"tournamentId": t["id"]})["Item"]["rawKey"]
+        self.save_tournament(t, raw_content, raw_ext)
+        new_raw = f"raw/{t['id']}.{raw_ext}"
+        for key in (f"tournaments/{t['id']}.json", new_raw):
+            self._purge_versions(key)
+        if old_raw != new_raw:
+            self._purge_versions(old_raw, keep_latest=False)
+
+    # --- erasure -------------------------------------------------------------
+    def delete_player(self, pid: str) -> None:
+        from boto3.dynamodb.conditions import Key
+
+        items = self._query_all(self.players, KeyConditionExpression=Key("playerId").eq(pid),
+                                ProjectionExpression="playerId, SK")
+        with self.players.batch_writer() as batch:
+            for i in items:
+                if i["SK"] != "ERASED":
+                    batch.delete_item(Key={"playerId": pid, "SK": i["SK"]})
+
+    def add_erased(self, pid: str) -> None:
+        self.players.put_item(Item={"playerId": pid, "SK": "ERASED"})
+
+    def erased_ids(self, pids) -> set[str]:
+        return {i["playerId"] for i in self._batch_get([{"playerId": p, "SK": "ERASED"} for p in set(pids)])}
+
     # --- derived ratings ---------------------------------------------------
-    def write_results(self, result: dict) -> None:
-        existing = self._scan_all(
-            self.players,
-            ProjectionExpression="playerId, SK, #h, #m",
-            ExpressionAttributeNames={"#h": "hidden", "#m": "membership"},
-        )
-        profiles = {i["playerId"]: i for i in existing if i["SK"] == "PROFILE"}
-        stale = {(i["playerId"], i["SK"]) for i in existing if i["SK"] != "PROFILE"}
+    def write_results(self, result: dict, incremental: bool = False) -> None:
+        """See LocalStorage.write_results. Incremental writes touch only the players in `result`."""
+        if incremental:
+            profiles, stale = self.get_profiles(result["names"]), set()
+        else:
+            existing = self._scan_all(
+                self.players,
+                ProjectionExpression="playerId, SK, #h, #m",
+                ExpressionAttributeNames={"#h": "hidden", "#m": "membership"},
+            )
+            profiles = {i["playerId"]: i for i in existing if i["SK"] == "PROFILE"}
+            stale = {(i["playerId"], i["SK"]) for i in existing if i["SK"].startswith(("LADDER#", "HIST#"))}
 
         for pid, name in result["names"].items():
             self.players.update_item(
                 Key={"playerId": pid, "SK": "PROFILE"},
-                UpdateExpression="SET displayName = :n, #h = if_not_exists(#h, :f), #m = if_not_exists(#m, :e)",
+                UpdateExpression="SET displayName = :n, spellings = :s, "
+                                 "#h = if_not_exists(#h, :f), #m = if_not_exists(#m, :e)",
                 ExpressionAttributeNames={"#h": "hidden", "#m": "membership"},
-                ExpressionAttributeValues={":n": name, ":f": False, ":e": ""},
+                ExpressionAttributeValues={":n": name, ":s": _to_ddb(result["spellings"][pid]), ":f": False, ":e": ""},
             )
 
         with self.players.batch_writer(overwrite_by_pkeys=["playerId", "SK"]) as batch:
@@ -293,6 +451,12 @@ class AwsStorage:
         item = self.players.get_item(Key={"playerId": pid, "SK": f"LADDER#{ladder}"}).get("Item")
         return _from_ddb(item) if item else None
 
+    def get_ladder_entries(self, ladders, pids) -> dict[str, dict[str, dict]]:
+        out = {l: {} for l in ladders}
+        for item in self._batch_get([{"playerId": p, "SK": f"LADDER#{l}"} for l in out for p in set(pids)]):
+            out[item["ladder"]][item["playerId"]] = item
+        return out
+
     def get_history(self, pid: str, ladder: str) -> list[dict]:
         from boto3.dynamodb.conditions import Key
 
@@ -306,17 +470,21 @@ class AwsStorage:
         return items
 
     # --- profiles ----------------------------------------------------------
-    def get_profiles(self, pids) -> dict[str, dict]:
-        keys = [{"playerId": pid, "SK": "PROFILE"} for pid in set(pids)]
-        out = {}
+    def _batch_get(self, keys: list[dict]) -> list[dict]:
+        items = []
         for i in range(0, len(keys), 100):
             request = {self.players.name: {"Keys": keys[i:i + 100]}}
             while request:
                 resp = self.ddb.batch_get_item(RequestItems=request)
-                for item in _from_ddb(resp["Responses"].get(self.players.name, [])):
-                    item.pop("SK", None)
-                    out[item["playerId"]] = item
+                items += _from_ddb(resp["Responses"].get(self.players.name, []))
                 request = resp.get("UnprocessedKeys") or None
+        return items
+
+    def get_profiles(self, pids) -> dict[str, dict]:
+        out = {}
+        for item in self._batch_get([{"playerId": pid, "SK": "PROFILE"} for pid in set(pids)]):
+            item.pop("SK", None)
+            out[item["playerId"]] = item
         return out
 
     def update_profile(self, pid: str, **fields) -> dict | None:
@@ -340,7 +508,7 @@ class AwsStorage:
             raise
         mirror = {k: v for k, v in fields.items() if k in ("hidden", "membership")}
         if mirror:
-            for ladder in LADDERS:
+            for ladder in LADDER_IDS:
                 try:
                     self.players.update_item(
                         Key={"playerId": pid, "SK": f"LADDER#{ladder}"},
@@ -367,6 +535,22 @@ class AwsStorage:
     def list_accounts(self, claim_status: str | None = None) -> list[dict]:
         items = self._scan_all(self.accounts)
         return [a for a in items if claim_status in (None, a.get("claimStatus"))]
+
+    def delete_account(self, sub: str) -> None:
+        self.accounts.delete_item(Key={"sub": sub})
+
+    def delete_login(self, username: str) -> None:
+        """Delete the Cognito user (USER_POOL_ID is set on the deployed Lambda)."""
+        pool = os.environ.get("USER_POOL_ID")
+        if not pool:
+            return
+        import boto3
+
+        cognito = boto3.client("cognito-idp")
+        try:
+            cognito.admin_delete_user(UserPoolId=pool, Username=username)
+        except cognito.exceptions.UserNotFoundException:
+            pass
 
     # --- release notes -----------------------------------------------------
     def list_release_notes(self) -> list[dict]:

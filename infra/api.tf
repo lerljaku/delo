@@ -5,7 +5,7 @@ data "archive_file" "api" {
   type        = "zip"
   source_dir  = "${path.module}/../backend"
   output_path = "${path.module}/build/api.zip"
-  excludes    = ["tests", "local_server.py", "import_events.py", "esl/__pycache__", "tests/__pycache__", "__pycache__"]
+  excludes    = ["tests", "local_server.py", "import_events.py", "delo/__pycache__", "tests/__pycache__", "__pycache__"]
 }
 
 resource "aws_iam_role" "api" {
@@ -43,9 +43,20 @@ resource "aws_iam_role_policy" "api" {
         ])
       },
       {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Effect = "Allow"
+        # DeleteObjectVersion + ListBucketVersions: GDPR erasure purges old versions of rewritten files
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
         Resource = "${aws_s3_bucket.data.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = aws_s3_bucket.data.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cognito-idp:AdminDeleteUser"] # users deleting their own account
+        Resource = aws_cognito_user_pool.users.arn
       },
     ]
   })
@@ -61,7 +72,7 @@ resource "aws_lambda_function" "api" {
   role             = aws_iam_role.api.arn
   runtime          = "python3.13"
   architectures    = ["arm64"]
-  handler          = "esl.api.lambda_handler"
+  handler          = "delo.api.lambda_handler"
   filename         = data.archive_file.api.output_path
   source_code_hash = data.archive_file.api.output_base64sha256
   memory_size      = 512
@@ -75,6 +86,7 @@ resource "aws_lambda_function" "api" {
       PLAYERS_TABLE       = aws_dynamodb_table.players.name
       ACCOUNTS_TABLE      = aws_dynamodb_table.accounts.name
       RELEASE_NOTES_TABLE = aws_dynamodb_table.release_notes.name
+      USER_POOL_ID        = aws_cognito_user_pool.users.id
     }
   }
 

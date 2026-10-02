@@ -1,7 +1,9 @@
-# ESL — Elo Scalp Lotion
+# Delo
 
 Elo ratings for Magic: The Gathering players, calculated from tournament results that
-admins upload. There are two ladders, **REL** and **REL + Casual**. Each player gets a
+admins upload, at [mtgdelo.com](https://mtgdelo.com) once the domain is registered. There are two
+ladders, **REL** and **REL + Casual**, each for all formats together and per format (Modern,
+Limited, Duel Commander, EDH, Legacy, Vintage, Premodern). Each player gets a
 detail page with stats, an Elo chart, best and worst matchups, and tournament history.
 
 * Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -88,7 +90,7 @@ navigation.
 `backend/import_events.py` loads every Eventlink paste in `raw-data-eventlink/` into the
 deployed S3 bucket and DynamoDB tables, then recalculates Elo once. It needs Python, the
 dev requirements and AWS credentials. It finds the table and bucket names in the deployed
-Lambda's settings (`terraform output lambda_function`, `esl-prod-api` by default).
+Lambda's settings (`terraform output lambda_function`, `delo-prod-api` by default).
 
 ```bash
 pip install -r backend/requirements-dev.txt
@@ -132,11 +134,12 @@ page without a deploy.
 
 ### Changing the Elo model
 
-1. Edit constants or logic in `backend/esl/elo.py` or `engine.py`, bump
+1. Edit constants or logic in `backend/delo/elo.py` or `engine.py`, bump
    `MODEL_VERSION`, and update `docs/ELO.md`.
 2. `terraform apply`
 3. Admin page → **Recalculate everything**. All ratings are replayed from the stored
-   source data in S3.
+   source data in S3. Until then, uploads also fall back to a full recalculation, because
+   incremental updates only continue from ratings computed with the current `MODEL_VERSION`.
 
 ### Several people deploying
 
@@ -145,14 +148,17 @@ DynamoDB lock table once, then uncomment the `backend "s3"` block in
 `infra/versions.tf` and run `terraform init -migrate-state`. To get a separate test stack,
 set `environment = "dev"` in a separate state or workspace.
 
-### Custom domain (optional)
+### Custom domain (mtgdelo.com)
 
-1. Request an ACM certificate for the domain in **us-east-1**.
-2. In `infra/site.tf`, add `aliases = ["esl.example"]` to the distribution and replace
-   `viewer_certificate` with the ACM certificate ARN (`ssl_support_method = "sni-only"`).
-3. Update the Cognito callback and logout URLs in `infra/auth.tf` and the
-   `redirectUri`/`logoutUri` values in `site.tf`.
-4. Add a DNS CNAME or alias record pointing to the CloudFront domain.
+1. Register the domain in Route 53 (Route 53 → Domains → Register). This also creates its
+   hosted zone (about $0.50/month).
+2. Set `domain_name = "mtgdelo.com"` in `infra/terraform.tfvars` and run `terraform apply`.
+   Terraform requests the certificate in us-east-1, validates it through DNS, points
+   `mtgdelo.com` and `www.mtgdelo.com` at CloudFront (www redirects to the bare domain) and
+   adds the domain to the Cognito login URLs. The `cloudfront_url` output keeps working.
+
+With another DNS provider, create the hosted zone for the domain in Route 53 and point the
+domain's name servers at it.
 
 ### Costs
 

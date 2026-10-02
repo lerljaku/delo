@@ -17,8 +17,9 @@ import json
 import re
 import unicodedata
 from datetime import date as date_cls
+from urllib.parse import urlsplit
 
-from .elo import TOURNAMENT_TYPES
+from .elo import GAME_FORMATS, TOURNAMENT_TYPES
 
 FORMATS = ("csv", "json", "text", "eventlink")
 BYE_NAMES = {"bye", "-", ""}
@@ -147,7 +148,7 @@ def parse_json(content: str) -> tuple[list[dict], dict]:
             matches.append(_json_match(m, number, f"round {number} match {mi}"))
     for mi, m in enumerate(data.get("matches") or [], start=1):
         matches.append(_json_match(m, None, f"match {mi}"))
-    meta = {k: data[k] for k in ("name", "date", "type") if data.get(k)}
+    meta = {k: data[k] for k in ("name", "date", "type", "format", "link") if data.get(k)}
     return matches, meta
 
 
@@ -281,6 +282,50 @@ def split_eventlink(content: str) -> list[str]:
         return parts
 
 
+def eventlink_last_round(content: str) -> int:
+    """Highest round in an Eventlink paste: records are counted after the match, so W+L+D of
+    the most advanced record is that round's number."""
+    lines = (l.strip() for l in content.splitlines())
+    return max((sum(int(x) for x in m.groups()) for l in lines if (m := _RECORD_RE.match(l))), default=0)
+
+
+def combine_eventlink_files(files: list[dict]) -> str:
+    """Join Eventlink exports of one event, e.g. one file per round, in round order.
+
+    files: [{"name": "round2.txt", "content": "..."}] in any order.
+    """
+    by_round: dict[int, tuple[str, str]] = {}
+    for i, f in enumerate(files, start=1):
+        name = str(f.get("name") or f"file {i}")
+        text = str(f.get("content") or "").lstrip("﻿")
+        if not text.strip():
+            raise ParseError(f"{name} is empty")
+        if not _looks_like_eventlink(text):
+            raise ParseError(f"{name}: several files can only be combined for Eventlink pairings")
+        try:
+            parse_eventlink(text)
+        except ParseError as err:
+            raise ParseError(f"{name}: {err}") from None
+        rnd = eventlink_last_round(text)
+        if rnd in by_round:
+            raise ParseError(f"{name} and {by_round[rnd][0]} both end with round {rnd}. Is a file there twice?")
+        by_round[rnd] = (name, text)
+    return "\n".join(text.strip("\n") for _, (_, text) in sorted(by_round.items()))
+
+
+def upload_content(content: str, files, fmt: str = "auto") -> tuple[str, str]:
+    """(content, file format) of an upload that has either pasted content or a list of files."""
+    if not files:
+        return content, fmt
+    if not isinstance(files, list) or not all(isinstance(f, dict) for f in files):
+        raise ParseError("files must be a list of {name, content}")
+    if len(files) == 1:
+        return str(files[0].get("content") or ""), fmt
+    if (fmt or "auto").lower() not in ("auto", "eventlink"):
+        raise ParseError("Several files can only be combined for Eventlink pairings")
+    return combine_eventlink_files(files), "eventlink"
+
+
 def _looks_like_eventlink(content: str) -> bool:
     lines = [l.strip() for l in content.splitlines() if l.strip()][:30]
     return sum(bool(_RECORD_RE.match(l)) for l in lines) >= max(2, len(lines) // 4)
@@ -362,11 +407,37 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", player_key(text)).strip("-")[:40] or "tournament"
 
 
+def parse_game_format(value) -> str | None:
+    """Game format id from an id or display name ("Duel Commander" -> "duel-commander"); None if empty."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    key = _slug(text)
+    for fid, label in GAME_FORMATS.items():
+        if key in (fid, _slug(label)):
+            return fid
+    raise ParseError(f"Format must be one of {', '.join(GAME_FORMATS.values())}, got '{text}'")
+
+
+def parse_link(value) -> str | None:
+    """Optional http(s) link to the event's public page, e.g. its Eventlink or store post."""
+    link = str(value or "").strip()
+    if not link:
+        return None
+    parts = urlsplit(link)
+    if parts.scheme not in ("http", "https") or not parts.netloc or len(link) > 500 or any(c.isspace() for c in link):
+        raise ParseError(f"Link must be a web address starting with https://, got '{link[:100]}'")
+    return link
+
+
 def build_tournament(
     *, content: str, name: str = "", date: str = "", type: str = "", fmt: str = "auto",
-    uploaded_by: str = "", uploaded_at: str = "",
+    game_format: str = "", link: str = "", uploaded_by: str = "", uploaded_at: str = "",
 ) -> dict:
-    """Parse an upload and return the normalized tournament (see ARCHITECTURE.md §3.1)."""
+    """Parse an upload and return the normalized tournament (see ARCHITECTURE.md §3.1).
+
+    fmt is the file format (csv, eventlink, ...); game_format the Magic format (modern, ...).
+    """
     content = (content or "").lstrip("﻿")
     if not content.strip():
         raise ParseError("Upload is empty")
@@ -396,6 +467,8 @@ def build_tournament(
         raise ParseError(f"Date must be YYYY-MM-DD, got '{date}'") from None
     if type not in TOURNAMENT_TYPES:
         raise ParseError(f"Type must be one of {', '.join(TOURNAMENT_TYPES)}, got '{type}'")
+    game_format = parse_game_format(game_format or meta.get("format"))
+    link = parse_link(link or meta.get("link"))
 
     _validate(raw)
     players: dict[str, str] = {}
@@ -420,6 +493,8 @@ def build_tournament(
         "name": name,
         "date": date,
         "type": type,
+        "format": game_format,
+        "link": link,
         "sourceFormat": fmt,
         "uploadedAt": uploaded_at,
         "uploadedBy": uploaded_by,

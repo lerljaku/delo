@@ -1,4 +1,4 @@
-import { api, badge, CONFIG, currentUser, esc, login, playerLink, renderNav, showError } from "./common.js";
+import { api, badge, CONFIG, currentUser, esc, GAME_FORMATS, login, logout, playerLink, renderNav, showError } from "./common.js";
 
 renderNav("account.html");
 const content = document.getElementById("content");
@@ -9,6 +9,45 @@ const STATUS = {
   approved: "Verified. This player profile is yours.",
   rejected: "Your last claim was rejected. Contact an admin if this is a mistake.",
 };
+
+// One suggestion list per format; the server orders it (own decks, newest first, then others).
+async function renderDecks() {
+  const box = document.getElementById("decks-box");
+  const data = await api("/me/decks");
+  if (!data.tournaments.length) {
+    box.innerHTML = '<p class="muted">No tournaments yet.</p>';
+    return;
+  }
+  const listId = (format) => `decks-${format || "none"}`;
+  const formats = new Set(data.tournaments.map((t) => t.format || ""));
+  box.innerHTML = `${[...formats].map((f) => `<datalist id="${listId(f)}">${(data.suggestions[f] || [])
+    .map((d) => `<option value="${esc(d)}"></option>`).join("")}</datalist>`).join("")}
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Tournament</th><th>Format</th><th>Deck</th></tr></thead><tbody>
+    ${data.tournaments.map((t) => `<tr><td>${esc(t.date)}</td>
+      <td><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a></td>
+      <td>${t.format ? esc(GAME_FORMATS[t.format] || t.format) : '<span class="muted">—</span>'}</td>
+      <td><input type="text" class="deck-input" list="${listId(t.format)}" maxlength="60" value="${esc(t.deck || "")}"
+        data-tid="${esc(t.tournamentId)}" placeholder="Choose or type a deck" aria-label="Deck for ${esc(t.name)}">
+        <span class="deck-status muted" aria-live="polite"></span></td></tr>`).join("")}
+    </tbody></table></div>`;
+
+  box.querySelectorAll("input.deck-input").forEach((input) => input.addEventListener("change", async () => {
+    const status = input.nextElementSibling;
+    status.textContent = "Saving…";
+    try {
+      const r = await api(`/me/decks/${encodeURIComponent(input.dataset.tid)}`, { method: "POST", body: { deck: input.value } });
+      input.value = r.deck || "";
+      status.textContent = "Saved";
+      // re-read suggestions so the new deck moves to the top of its format's list
+      const fresh = await api("/me/decks");
+      for (const f of formats) {
+        box.querySelector(`#${listId(f)}`).innerHTML = (fresh.suggestions[f] || []).map((d) => `<option value="${esc(d)}"></option>`).join("");
+      }
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }));
+}
 
 async function render() {
   if (!currentUser()) {
@@ -40,9 +79,27 @@ async function render() {
     ${me.claimStatus === "approved" ? `<h2>Privacy</h2>
       <div class="card"><label class="row"><input type="checkbox" id="hidden" ${player?.hidden ? "checked" : ""}>
         Hide my name. It will show as “Hidden player” everywhere. Your rating is still counted.</label><div id="privacy-msg"></div></div>` : ""}
+    ${me.claimStatus === "approved" ? `<h2 id="decks">My decks</h2>
+      <p class="secondary">Pick or type the deck you played in each tournament. Your most recent decks come first.</p>
+      <div id="decks-box"><p class="muted">Loading…</p></div>` : ""}
     ${claimSection}
     <h2>Membership</h2>
-    <p class="secondary">Supporter and Diamond memberships are coming soon. Viewing and uploads will always stay free.</p>`;
+    <p class="secondary">Supporter and Diamond memberships are coming soon. Viewing and uploads will always stay free.</p>
+    <h2>Delete account</h2>
+    <div class="card">
+      <p class="secondary">Deletes your email and login. Your player profile and results stay on the site, no longer linked to you.
+        To have your name removed from tournament results as well, see the <a href="privacy.html">privacy notice</a>.</p>
+      <button class="secondary" id="delete-account">Delete my account</button><div id="delete-msg"></div></div>`;
+
+  if (me.claimStatus === "approved") renderDecks().catch((err) => showError(document.getElementById("decks-box"), err));
+
+  document.getElementById("delete-account").addEventListener("click", async () => {
+    if (!confirm("Delete your account? This cannot be undone.")) return;
+    try {
+      await api("/me", { method: "DELETE" });
+      logout();
+    } catch (err) { showError(document.getElementById("delete-msg"), err); }
+  });
 
   document.getElementById("hidden")?.addEventListener("change", async (e) => {
     const msg = document.getElementById("privacy-msg");

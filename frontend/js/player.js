@@ -1,11 +1,13 @@
 import {
-  api, badge, esc, fmtDelta, fmtPct, fmtRating, getLadder, ladderToggle, param, playerLink, renderNav, resultCell, showError, typeBadge,
+  api, badge, esc, fmtDelta, fmtPct, fmtRating, formatBadge, formatSelect, getFormat, getLadder, ladderLabel, ladderToggle, param, playerLink,
+  renderNav, resultCell, showError, typeBadge,
 } from "./common.js";
 
 renderNav("");
 const content = document.getElementById("content");
 const pid = param("id");
 let ladder = getLadder();
+let format = getFormat();
 let chart = null;
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -16,7 +18,7 @@ function tile(label, value, sub = "", cls = "") {
 
 function matchupTile(label, mu) {
   if (!mu) return tile(label, '<span class="muted">—</span>', "not enough data");
-  return tile(label, playerLink(mu.playerId, mu.displayName, ladder), `${mu.wins}-${mu.losses}-${mu.draws} in ${mu.matches} match${mu.matches === 1 ? "" : "es"}`, "name");
+  return tile(label, playerLink(mu.playerId, mu.displayName, ladder, format), `${mu.wins}-${mu.losses}-${mu.draws} in ${mu.matches} match${mu.matches === 1 ? "" : "es"}`, "name");
 }
 
 function renderChart(history, initial) {
@@ -78,21 +80,21 @@ function historyTable(history) {
   return `<div class="table-wrap"><table><thead><tr><th class="num">#</th><th>Date</th><th>Opponent</th><th>Result</th>
     <th class="num">Score</th><th class="num">Elo</th><th class="num">Change</th></tr></thead><tbody>
     ${history.slice().reverse().map((h) => `<tr><td class="num">${h.seq}</td><td>${esc(h.date)}</td>
-      <td>${playerLink(h.opponentId, h.opponentName, ladder)}</td><td>${resultCell(h.result)}</td>
+      <td>${playerLink(h.opponentId, h.opponentName, ladder, format)}</td><td>${resultCell(h.result)}</td>
       <td class="num">${esc(h.score)}</td><td class="num">${fmtRating(h.ratingAfter)}</td><td class="num">${fmtDelta(h.delta)}</td></tr>`).join("")}
     </tbody></table></div>`;
 }
 
-function tournamentHistory(tournaments) {
+function tournamentHistory(tournaments, showElo = true) {
   return tournaments.map((t) => `<details class="tournament"><summary>
-      <span class="name"><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a> ${typeBadge(t.type)}</span>
+      <span class="name"><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a> ${typeBadge(t.type)}${formatBadge(t.format)}${t.deck ? ` <span class="deck" title="Deck">${esc(t.deck)}</span>` : ""}</span>
       <span class="muted">${esc(t.date)}</span>
       <span>${t.rank ? `#${t.rank} of ${t.playerCount}` : ""}</span>
       <span class="num"><strong>${t.wins}-${t.losses}-${t.draws}</strong>${t.byes ? ` <span class="muted">(+${t.byes} bye)</span>` : ""}</span>
-      <span class="num" title="Elo change in this tournament">${fmtDelta(t.delta)}</span></summary>
-      <table><thead><tr><th class="num">Round</th><th>Opponent</th><th>Result</th><th class="num">Games</th><th class="num">Elo change</th></tr></thead><tbody>
-      ${t.matches.map((m) => `<tr><td class="num">${m.round}</td><td>${playerLink(m.opponentId, m.opponentName, ladder)}</td>
-        <td>${resultCell(m.result)}</td><td class="num">${esc(m.score)}</td><td class="num">${m.result === "BYE" ? "" : fmtDelta(m.delta)}</td></tr>`).join("")}
+      ${showElo ? `<span class="num" title="Elo change in this tournament">${fmtDelta(t.delta)}</span>` : ""}</summary>
+      <table><thead><tr><th class="num">Round</th><th>Opponent</th><th>Result</th><th class="num">Games</th>${showElo ? '<th class="num">Elo change</th>' : ""}</tr></thead><tbody>
+      ${t.matches.map((m) => `<tr><td class="num">${m.round}</td><td>${playerLink(m.opponentId, m.opponentName, ladder, format)}</td>
+        <td>${resultCell(m.result)}</td><td class="num">${esc(m.score)}</td>${showElo ? `<td class="num">${m.result === "BYE" ? "" : fmtDelta(m.delta)}</td>` : ""}</tr>`).join("")}
       </tbody></table></details>`).join("");
 }
 
@@ -100,16 +102,19 @@ async function load() {
   if (!pid) return showError(content, "No player selected");
   content.innerHTML = '<p class="muted">Loading…</p>';
   try {
-    const [p, h] = await Promise.all([api(`/players/${pid}`, { query: { ladder } }), api(`/players/${pid}/history`, { query: { ladder } })]);
+    const query = { ladder, format };
+    const [p, h] = await Promise.all([api(`/players/${pid}`, { query }), api(`/players/${pid}/history`, { query })]);
     const s = p.stats;
-    document.title = `${p.displayName} · ESL`;
+    document.title = `${p.displayName} · Delo`;
     content.innerHTML = `
       <h1 class="${p.hidden ? "hidden-name" : ""}">${esc(p.displayName)}${badge(p.membership)}</h1>
-      <p class="secondary">Rank #${p.rank} of ${p.playerCount} · ${ladder === "rel" ? "REL" : "REL + Casual"} ladder</p>
-      <div class="toolbar"><div id="ladder"></div></div>
+      <p class="secondary">${p.provisional ? `Provisional: ${s.matches} of ${p.minMatches} rated matches` : `Rank #${p.rank} of ${p.playerCount}`}
+        · ${ladderLabel(ladder, format)} ladder</p>
+      <div class="toolbar"><div id="ladder"></div><div id="format"></div></div>
       <div class="tiles">
-        ${tile("Elo", fmtRating(p.rating))}
-        ${tile("Peak Elo", fmtRating(s.peakRating), s.peakDate ? esc(s.peakDate) : "")}
+        ${p.provisional
+          ? tile("Elo", '<span class="muted">Provisional</span>', `shown after ${p.minMatches} rated matches, ${p.minMatches - s.matches} to go`)
+          : `${tile("Elo", fmtRating(p.rating))}${tile("Peak Elo", fmtRating(s.peakRating), s.peakDate ? esc(s.peakDate) : "")}`}
         ${tile("Win rate", fmtPct(s.winrate), `${s.wins}-${s.losses}-${s.draws} (W-L-D)`)}
         ${tile("Matches", s.matches, `${s.tournamentCount} tournament${s.tournamentCount === 1 ? "" : "s"}`)}
         ${tile("Wins", s.wins)}${tile("Losses", s.losses)}${tile("Draws", s.draws)}
@@ -119,18 +124,25 @@ async function load() {
         ${matchupTile("Best matchup", s.bestMatchup)}
         ${matchupTile("Worst matchup", s.worstMatchup)}
       </div>
-      <h2>Elo history</h2>
+      ${p.provisional ? "" : `<h2>Elo history</h2>
       <div class="card chart-card"><canvas id="elo-chart" role="img" aria-label="Elo rating after each rated match"></canvas></div>
-      <details style="margin-top:8px"><summary class="secondary">Show as table</summary>${historyTable(h.history)}</details>
+      <details style="margin-top:8px"><summary class="secondary">Show as table</summary>${historyTable(h.history)}</details>`}
       <h2>Tournament history</h2>
-      ${tournamentHistory(p.tournaments) || '<p class="muted">No tournaments.</p>'}`;
+      ${tournamentHistory(p.tournaments, !p.provisional) || '<p class="muted">No tournaments.</p>'}`;
     ladderToggle(document.getElementById("ladder"), (l) => { ladder = l; load(); });
-    renderChart(h.history, h.initialRating);
+    formatSelect(document.getElementById("format"), (f) => { format = f; load(); });
+    if (!p.provisional) renderChart(h.history, h.initialRating);
   } catch (err) {
-    if (err.status === 404 && err.data?.availableLadders?.length) {
+    if (err.status === 404 && err.data?.availableLadders) {
       const other = err.data.availableLadders[0];
-      content.innerHTML = `<div class="msg">This player has no rated matches in the ${ladder === "rel" ? "REL" : "REL + Casual"} ladder.
-        <a href="player.html?id=${encodeURIComponent(pid)}&ladder=${other}">View the ${other === "rel" ? "REL" : "REL + Casual"} ladder instead</a>.</div>`;
+      const link = (l, f) => `player.html?${new URLSearchParams({ id: pid, ladder: l, format: f })}`;
+      const alternative = other
+        ? `<a href="${link(other, format)}">View the ${ladderLabel(other, format)} ladder instead</a>.`
+        : format ? `<a href="${link(ladder, "")}">View all formats instead</a>.` : "";
+      content.innerHTML = `<div class="toolbar"><div id="ladder"></div><div id="format"></div></div>
+        <div class="msg">This player has no rated matches in the ${ladderLabel(ladder, format)} ladder. ${alternative}</div>`;
+      ladderToggle(document.getElementById("ladder"), (l) => { ladder = l; load(); });
+      formatSelect(document.getElementById("format"), (f) => { format = f; load(); });
     } else {
       showError(content, err);
     }

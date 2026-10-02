@@ -33,8 +33,13 @@ api("/elo-model").then((m) => {
 
     <h2>4. Ladders</h2>
     <p><strong>REL</strong> includes only REL tournaments (official events with prizes and entry fees).
-      <strong>REL + Casual</strong> also includes casual events. Each ladder is calculated independently, so a player has two ratings.</p>
+      <strong>REL + Casual</strong> also includes casual events. Both exist for all formats together and for each format
+      (Modern, Limited, Duel Commander, EDH, Legacy, Vintage, Premodern) on its own. Each ladder is calculated independently, so a player
+      who plays Modern and Legacy has separate Modern and Legacy ratings plus an all-formats rating.</p>
+    <p>A player gets a rank in a ladder after <strong>${m.min_matches} rated match${m.min_matches === 1 ? "" : "es"}</strong> there
+      (byes don't count). Until then they are listed as provisional.</p>
 
     <h2>5. Order of matches</h2>
-    <p>Tournaments are processed by date, and matches inside a tournament by round.</p>`;
+    <p>Tournaments are processed by date, and matches inside a tournament by round. A newly uploaded tournament is rated on top of the
+      current ratings. If it is dated before a tournament that is already rated, all tournaments are recalculated in date order instead.</p>`;
 }).catch((err) => showError(content, err));

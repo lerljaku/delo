@@ -1,15 +1,17 @@
-"""Import Eventlink pastes (raw-data-eventlink/*.txt) into ESL storage and recalculate Elo once.
+"""Import Eventlink pastes (raw-data-eventlink/*.txt) into Delo storage and recalculate Elo once.
 
-    py backend/import_events.py --target aws [--function esl-prod-api] [--profile NAME]
+    py backend/import_events.py --target aws [--function delo-prod-api] [--profile NAME]
     py backend/import_events.py --target local [--data .localdata]
 
 Options: --source DIR (default raw-data-eventlink/), --dry-run (parse and list only),
 --replace (delete every stored tournament first, e.g. after fixing dates in events.json).
 
-Event names, dates and types (rel/casual) come from events.json in the source folder. The first
-run writes it with guesses from the file names; fix the entries marked "todo" and run again.
+Event names, dates, types (rel/casual) and optional links come from events.json in the source
+folder. The first run writes it with guesses from the file names; fix the entries marked "todo" and
+run again. All events are Duel Commander unless an entry sets another "format" (see delo/elo.py).
 Files with several events pasted together are split into "file.txt#1", "file.txt#2", ...
-Tournaments that are already stored (same content and metadata) are skipped.
+Tournaments that are already stored (same content and metadata) are skipped; if only their format
+differs, the stored format is updated.
 
 --target aws needs boto3 and AWS credentials. Table and bucket names are read from the deployed
 Lambda's environment (`terraform output lambda_function`).
@@ -27,11 +29,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from esl.api import App  # noqa: E402
-from esl.parsers import ParseError, build_tournament, split_eventlink  # noqa: E402
+from delo.api import App  # noqa: E402
+from delo.parsers import ParseError, build_tournament, split_eventlink  # noqa: E402
 
 RAW_DATA = ROOT / "raw-data-eventlink"
 MANIFEST = "events.json"
+DEFAULT_FORMAT = "duel-commander"  # every event in raw-data-eventlink/ is Duel Commander
 
 
 def guess_date(stem: str, year: int) -> str | None:
@@ -67,7 +70,8 @@ def build_manifest(events: list[tuple[str, str]], year: int) -> dict:
         filename, _, part = key.partition("#")
         stem = Path(filename).stem.strip()
         guessed = guess_date(stem, year)
-        entry = {"name": f"{stem} ({part})" if part else stem, "date": guessed or f"{year}-01-01", "type": "rel"}
+        entry = {"name": f"{stem} ({part})" if part else stem, "date": guessed or f"{year}-01-01", "type": "rel",
+                 "format": DEFAULT_FORMAT, "link": ""}
         if not guessed:
             entry["todo"] = "date not found in the file name, set it and delete this line"
         manifest[key] = entry
@@ -90,8 +94,8 @@ def import_events(storage, source: Path, uploaded_by: str = "import", dry_run: b
         for t in storage.list_tournaments():
             storage.delete_tournament(t["tournamentId"])
         print("deleted all stored tournaments")
-    existing = {t["tournamentId"] for t in storage.list_tournaments()}
-    imported = failed = 0
+    existing = {t["tournamentId"]: t.get("format") for t in storage.list_tournaments()}
+    imported = updated = failed = 0
     for key, content in events:
         meta = manifest.get(key)
         if meta is None or meta.get("skip"):
@@ -99,7 +103,8 @@ def import_events(storage, source: Path, uploaded_by: str = "import", dry_run: b
             continue
         try:
             t = build_tournament(content=content, name=meta.get("name", ""), date=meta.get("date", ""),
-                                 type=meta.get("type", ""), fmt="eventlink", uploaded_by=uploaded_by,
+                                 type=meta.get("type", ""), fmt="eventlink", game_format=meta.get("format") or DEFAULT_FORMAT,
+                                 link=meta.get("link", ""), uploaded_by=uploaded_by,
                                  uploaded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         except ParseError as err:
             print(f"{key}: ERROR {err}")
@@ -107,19 +112,26 @@ def import_events(storage, source: Path, uploaded_by: str = "import", dry_run: b
             continue
         todo = f"  (todo: {meta['todo']})" if "todo" in meta else ""
         if t["id"] in existing:
-            print(f"{key}: already stored as {t['id']}")
+            if existing[t["id"]] == t["format"]:
+                print(f"{key}: already stored as {t['id']}")
+                continue
+            print(f"{key}: already stored as {t['id']}, format {existing[t['id']] or '(none)'} -> {t['format']}")
+            if not dry_run:
+                storage.update_tournament(t["id"], format=t["format"])
+                existing[t["id"]] = t["format"]
+            updated += 1
             continue
-        print(f"{key}: {t['date']} {t['type']} '{t['name']}', {len(t['players'])} players, "
-              f"{len(t['matches'])} matches{todo}")
+        print(f"{key}: {t['date']} {t['type']} {t['format'] or '(no format)'} '{t['name']}', "
+              f"{len(t['players'])} players, {len(t['matches'])} matches{todo}")
         if not dry_run:
             storage.save_tournament(t, content, "txt")
-            existing.add(t["id"])
+            existing[t["id"]] = t["format"]
         imported += 1
     if dry_run:
-        print(f"dry run: {imported} events would be imported, {failed} failed")
+        print(f"dry run: {imported} events would be imported, {updated} updated, {failed} failed")
         return
     result = App(storage).recalculate()
-    print(f"imported {imported} events, {failed} failed; recalculated {result['tournaments']} tournaments, "
+    print(f"imported {imported} events, updated {updated}, {failed} failed; recalculated {result['tournaments']} tournaments, "
           f"{result['players']} players")
 
 
@@ -133,17 +145,17 @@ def aws_storage(function: str, profile: str | None, region: str | None):
     if profile:
         os.environ["AWS_PROFILE"] = profile
     os.environ.setdefault("AWS_DEFAULT_REGION", session.region_name)
-    from esl.storage import AwsStorage
+    from delo.storage import AwsStorage
 
     return AwsStorage()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import Eventlink pastes into ESL storage.")
+    parser = argparse.ArgumentParser(description="Import Eventlink pastes into Delo storage.")
     parser.add_argument("--target", choices=("aws", "local"), required=True)
     parser.add_argument("--source", default=str(RAW_DATA), help="folder of Eventlink .txt pastes")
     parser.add_argument("--data", default=str(ROOT / ".localdata"), help="local storage folder (--target local)")
-    parser.add_argument("--function", default="esl-prod-api", help="deployed Lambda name (--target aws)")
+    parser.add_argument("--function", default="delo-prod-api", help="deployed Lambda name (--target aws)")
     parser.add_argument("--profile", help="AWS profile (--target aws)")
     parser.add_argument("--region", help="AWS region (--target aws)")
     parser.add_argument("--dry-run", action="store_true", help="parse and list, store nothing")
@@ -156,7 +168,7 @@ def main() -> None:
     if args.target == "aws":
         storage = aws_storage(args.function, args.profile, args.region)
     else:
-        from esl.storage import LocalStorage
+        from delo.storage import LocalStorage
 
         storage = LocalStorage(args.data)
     import_events(storage, source, dry_run=args.dry_run, replace=args.replace)

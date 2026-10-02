@@ -1,6 +1,6 @@
-# ESL — Architecture
+# Delo — Architecture
 
-ESL (Elo Scalp Lotion) tracks Elo ratings for Magic: The Gathering players from tournament results
+Delo (mtgdelo.com) tracks Elo ratings for Magic: The Gathering players from tournament results
 uploaded by admins. It is designed to run for (close to) **$0/month** on AWS at
 community scale.
 
@@ -8,7 +8,7 @@ community scale.
 
 | Goals | Non-goals (for now) |
 |-------|---------------------|
-| Leaderboards for two ladders: **REL** and **REL + Casual** | Real-time pairing / running tournaments |
+| Leaderboards for two ladders, **REL** and **REL + Casual**, for all formats and per format | Real-time pairing / running tournaments |
 | Player detail page with stats, Elo chart, matchups, tournament history | Deck-level analytics (planned for paid tier) |
 | Admin upload of tournament results in several text formats | Automatic scraping of third-party sites |
 | Full, deterministic **recalculation** when the Elo model changes | Multi-region / high availability |
@@ -67,6 +67,8 @@ queryable/derived data.
   "name": "FNM Modern",
   "date": "2026-09-12",
   "type": "rel",                    // "rel" | "casual"
+  "format": "modern",               // game format (elo.GAME_FORMATS); null = all-formats ladders only
+  "link": "https://...",            // optional public page of the event, or null
   "sourceFormat": "csv",
   "uploadedAt": "2026-09-13T10:00:00Z",
   "uploadedBy": "admin@example.com",
@@ -83,18 +85,27 @@ queryable/derived data.
 replay all matches through the Elo model, rewrite derived DynamoDB items. Changing the
 model is therefore a code change + `POST /api/admin/recalculate`.
 
+**Uploads are incremental**: when the new tournament sorts after every stored one (the usual
+case), only it is replayed, starting from its players' stored ladder entries, whose `state`
+holds the unrounded rating, current streaks and head-to-head counts. Only the touched
+`LADDER#` items are rewritten, and new `HIST#` items are appended. This gives exactly the result
+of a full recalculation (tested). A backdated tournament, or stored entries from an older
+`MODEL_VERSION`, trigger a full recalculation instead. Deleting a tournament or changing its
+format always recalculates everything.
+
 ### 3.2 DynamoDB tables (all on-demand / PAY_PER_REQUEST)
 
-**`Tournaments`**, PK `tournamentId`. Metadata only: name, date, type, sourceFormat,
+**`Tournaments`**, PK `tournamentId`. Metadata only: name, date, type, format, link, decks (`{playerId: deck name}`, set by players, not part of the tournament JSON because it doesn't affect ratings), sourceFormat,
 s3Key, rawKey, playerCount, matchCount, uploadedAt, uploadedBy.
 
 **`Players`**, PK `playerId`, SK:
 
 | SK | Content |
 |----|---------|
-| `PROFILE` | displayName, hidden, membership, ownerSub (user-controlled fields survive recalculation) |
-| `LADDER#rel` / `LADDER#all` | `ladder`, `rating`, `displayName`, `hidden`, `membership`, stats map, tournament history list |
-| `HIST#rel#000001` … | one record **per match** per ladder: date, tournamentId, round, opponentId, result, score, ratingBefore, ratingAfter, delta |
+| `PROFILE` | displayName, spellings (name counts for picking displayName), hidden, membership, ownerSub (user-controlled fields survive recalculation) |
+| `LADDER#rel`, `LADDER#all`, `LADDER#rel:modern`, … | `ladder`, `rating`, `displayName`, `hidden`, `membership`, stats map, tournament history list, engine `state` |
+| `HIST#rel#000001`, `HIST#rel:modern#000001` … | one record **per match** per ladder: date, tournamentId, round, opponentId, result, score, ratingBefore, ratingAfter, delta |
+| `ERASED` | marker only: this player id was erased (GDPR), anonymize it in new uploads |
 
 GSI `leaderboard`: PK `ladder` (S), SK `rating` (N) → one query returns a sorted leaderboard.
 
@@ -114,28 +125,35 @@ player's first 10 matches and 32 afterward, **match** result (not individual gam
 draw = 0.5, byes ignored. Ratings update in round order. The model is versioned
 (`MODEL_VERSION`), and a full recalculation takes seconds for thousands of matches.
 
-Two independent ladders are computed on each recalculation:
+Independent ladders are computed on each recalculation:
 
 * `rel` — only tournaments of type `rel`
 * `all` — `rel` + `casual` (casual matches can be down-weighted with `casual_weight`)
+* `rel:<format>` and `all:<format>` — the same, limited to one game format (`modern`,
+  `limited`, `duel-commander`, `edh`, `legacy`, `vintage`, `premodern`). `rel` and `all`
+  remain the global ladders across all formats.
 
 ## 5. API (API Gateway HTTP API → single Lambda)
 
 | Method & path | Auth | Purpose |
 |---------------|------|---------|
-| `GET /api/leaderboard?ladder=rel\|all` | public | Sorted players |
-| `GET /api/players/{id}?ladder=` | public | Stats + tournament history |
-| `GET /api/players/{id}/history?ladder=` | public | Elo history (chart) |
-| `GET /api/tournaments` · `GET /api/tournaments/{id}` | public | List / detail + standings |
+| `GET /api/leaderboard?ladder=rel\|all&format=` | public | Sorted players (no `format` = all formats) |
+| `GET /api/players/{id}?ladder=&format=` | public | Stats + tournament history |
+| `GET /api/players/{id}/history?ladder=&format=` | public | Elo history (chart) |
+| `GET /api/tournaments` · `GET /api/tournaments/{id}` | public | List / detail + standings and each player's Elo change (`ratingChanges`) |
 | `GET /api/release-notes` · `GET /api/release-notes/{version}` | public | Docs page |
 | `GET /api/elo-model` | public | Current model constants (Elo docs page) |
-| `POST /api/tournaments` (`?dryRun=1` for preview) | admin | Upload results → recalc |
+| `POST /api/tournaments` (`?dryRun=1` for preview) | admin | Upload results (format required, link optional; `files: [{name, content}]` combines Eventlink exports, e.g. one per round, in round order) → incremental rating update |
+| `POST /api/tournaments/{id}` | admin | Change format and/or link (format change → recalc) |
 | `DELETE /api/tournaments/{id}` | admin | Remove tournament → recalc |
 | `POST /api/admin/recalculate` | admin | Full recalculation |
 | `POST /api/release-notes` | admin | Publish release note |
 | `GET /api/admin/claims` · `POST /api/admin/claims/{sub}` | admin | Review profile claims |
 | `POST /api/admin/players/{id}` | admin | Set hidden / membership |
+| `POST /api/admin/players/{id}/erase` | admin | GDPR erasure: anonymize the player everywhere (see `delo/privacy.py`) |
 | `GET /api/me` · `POST /api/me/claim` · `POST /api/me/privacy` | user | Account, claim profile, hide name |
+| `DELETE /api/me` | user | Delete own account and Cognito login |
+| `GET /api/me/decks` · `POST /api/me/decks/{tournamentId}` | user (approved claim) | Own tournaments with decks + suggestions per format (own decks newest first, then others); set or clear a deck |
 
 API Gateway attaches the Cognito **JWT authorizer** to every non-GET route and to
 `/api/me` and `/api/admin/*`. The Lambda additionally checks the `cognito:groups` claim
@@ -199,7 +217,7 @@ JSON, so the rest of the pipeline is unchanged.
 ## 9. Repository layout
 
 ```
-backend/esl/          Python package deployed as the Lambda
+backend/delo/          Python package deployed as the Lambda
   elo.py              rating model + constants
   parsers.py          upload formats → normalized tournament
   engine.py           replay tournaments → ladders, stats, history
@@ -214,8 +232,7 @@ docs/                 architecture, decisions, Elo docs, release notes
 
 ## 10. Scaling notes
 
-Full recalculation on every upload is O(all matches). This is fine up to tens of
-thousands of matches: one Lambda invocation, and DynamoDB writes on the order of
-matches × 2 ladders, which costs about $0.03 per 10k matches. If that becomes a
-problem, add an incremental path: when the new tournament is the latest by date,
-replay only it from the current ratings.
+An upload of the latest tournament costs O(its players): about 4 ladders × players reads
+and writes. A full recalculation (backdated upload, delete, format change, model change) is
+O(all matches): one Lambda invocation, and DynamoDB writes on the order of matches × 4
+ladders (global and format, each REL and REL + Casual), about $0.06 per 10k matches.

@@ -1,5 +1,10 @@
 output "site_url" {
-  value = "https://${aws_cloudfront_distribution.site.domain_name}"
+  value = "https://${local.site_host}"
+}
+
+output "cloudfront_url" {
+  description = "The distribution's own address; keeps working when a custom domain is set."
+  value       = "https://${aws_cloudfront_distribution.site.domain_name}"
 }
 
 output "api_endpoint" {

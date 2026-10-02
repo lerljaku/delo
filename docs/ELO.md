@@ -37,10 +37,24 @@ matches are processed round by round.
 * **REL**: only tournaments marked REL (Competitive/Professional, or Regular with prizes).
 * **REL + Casual**: every tournament.
 
-The two ladders are computed independently, so the same player has two ratings.
+Both ladders also exist per game format (Modern, Limited, Duel Commander, EDH, Legacy,
+Vintage, Premodern), using only that format's tournaments. The plain REL and REL + Casual
+ladders stay global (every format). All ladders are computed independently, so a player has
+one rating per ladder they have played in.
+
+## Provisional players
+
+A player needs **1** rated match in a ladder (byes don't count) to get a rank and a visible
+Elo there (`min_matches`). Players with only byes are listed as provisional, without rank or
+rating. Raising the threshold (e.g. to 10) is a display rule: ratings count from the first
+match either way, so changing it needs no recalculation.
 
 ## Recalculation
 
 Raw results are stored permanently. When any constant or rule changes, `MODEL_VERSION`
 is bumped and all ratings are recomputed from scratch, so every rating is always
 consistent with the current model.
+
+A new upload dated after every rated tournament is rated on top of the current ratings,
+which gives the same numbers as a full replay. A backdated upload triggers a full
+recalculation, because Elo depends on the order of matches.

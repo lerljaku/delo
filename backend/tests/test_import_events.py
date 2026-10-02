@@ -11,9 +11,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from esl.storage import LocalStorage  # noqa: E402
+from delo.storage import LocalStorage  # noqa: E402
 from import_events import guess_date, import_events  # noqa: E402
-from test_esl import EVENTLINK  # noqa: E402
+from test_delo import EVENTLINK  # noqa: E402
 
 SECOND_EVENT = "1\nZed\n1–0–0\n20\nYan\n0–1–0\n"
 
@@ -60,11 +60,30 @@ class ImportEventsTests(unittest.TestCase):
         self.assertEqual(sorted(manifest), ["29.1. DC.txt", "liga.txt#1", "liga.txt#2"])
         self.assertEqual(manifest["29.1. DC.txt"]["date"][5:], "01-29")
         self.assertIn("todo", manifest["liga.txt#2"])
+        self.assertEqual({m["format"] for m in manifest.values()}, {"duel-commander"})
+        self.assertNotIn("todo", manifest["29.1. DC.txt"])
         self.assertEqual(len(self.storage.leaderboard("rel")), 7)
+        self.assertEqual(len(self.storage.leaderboard("rel:duel-commander")), 7)
 
         out = run(self.storage, self.source)
         self.assertIn("imported 0 events", out)
         self.assertEqual(len(self.storage.list_tournaments()), 3)
+
+    def test_missing_format_defaults_to_duel_commander_and_updates_stored(self):
+        run(self.storage, self.source)
+        tid = self.storage.list_tournaments()[0]["tournamentId"]
+        self.storage.update_tournament(tid, format=None)  # stored before formats existed
+        manifest_path = self.source / "events.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        for entry in manifest.values():
+            del entry["format"]
+        manifest_path.write_text(json.dumps(manifest), "utf-8")
+
+        out = run(self.storage, self.source)
+        self.assertIn("format (none) -> duel-commander", out)
+        self.assertIn("imported 0 events, updated 1", out)
+        self.assertEqual({t["format"] for t in self.storage.list_tournaments()}, {"duel-commander"})
+        self.assertEqual(len(self.storage.leaderboard("rel:duel-commander")), 7)
 
     def test_skip_replace_and_dry_run(self):
         run(self.storage, self.source)
@@ -113,9 +132,9 @@ class AwsImportEventsTests(ImportEventsTests):
             z.writestr("x.py", "")
         names = {k: v for k, v in ENV.items() if k.endswith(("_TABLE", "_BUCKET"))}
         boto3.client("lambda").create_function(
-            FunctionName="esl-prod-api", Runtime="python3.13", Role=role, Handler="x.h",
+            FunctionName="delo-prod-api", Runtime="python3.13", Role=role, Handler="x.h",
             Code={"ZipFile": code.getvalue()}, Environment={"Variables": names})
-        return aws_storage("esl-prod-api", None, None)
+        return aws_storage("delo-prod-api", None, None)
 
 
 if __name__ == "__main__":

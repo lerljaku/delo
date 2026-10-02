@@ -16,11 +16,11 @@ try:
 except ImportError:  # pragma: no cover
     mock_aws = None
 
-from test_esl import ApiTests  # noqa: E402
+from test_delo import ADMIN, ApiTests  # noqa: E402
 
 ENV = {
     "AWS_DEFAULT_REGION": "eu-central-1", "AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test",
-    "DATA_BUCKET": "esl-test-data", "TOURNAMENTS_TABLE": "t-tournaments", "PLAYERS_TABLE": "t-players",
+    "DATA_BUCKET": "delo-test-data", "TOURNAMENTS_TABLE": "t-tournaments", "PLAYERS_TABLE": "t-players",
     "ACCOUNTS_TABLE": "t-accounts", "RELEASE_NOTES_TABLE": "t-release-notes",
 }
 
@@ -54,7 +54,7 @@ def create_resources():
 @unittest.skipIf(mock_aws is None, "moto not installed")
 class AwsApiTests(ApiTests):
     def make_storage(self):
-        from esl.storage import AwsStorage
+        from delo.storage import AwsStorage
 
         patcher = unittest.mock.patch.dict(os.environ, ENV)
         patcher.start()
@@ -64,6 +64,21 @@ class AwsApiTests(ApiTests):
         self.addCleanup(mock.stop)
         create_resources()
         return AwsStorage()
+
+    def test_erase_leaves_no_old_s3_versions(self):
+        from test_delo import CSV, upload
+        from delo.parsers import player_id
+
+        upload(self.app, CSV)
+        storage = self.app.storage
+        storage.s3.put_bucket_versioning(Bucket=storage.bucket, VersioningConfiguration={"Status": "Enabled"})
+        tid = storage.list_tournaments()[0]["tournamentId"]
+        self.app.handle("POST", "/api/tournaments/" + tid, {}, {"link": "https://example.com/x"}, ADMIN)  # 2nd version
+        self.app.handle("POST", f"/api/admin/players/{player_id('Alice')}/erase", {}, {}, ADMIN)
+        versions = storage.s3.list_object_versions(Bucket=storage.bucket)["Versions"]
+        for v in versions:
+            body = storage.s3.get_object(Bucket=storage.bucket, Key=v["Key"], VersionId=v["VersionId"])["Body"].read()
+            self.assertNotIn(b"Alice", body, v["Key"])
 
 
 del ApiTests  # don't run the local-storage suite twice

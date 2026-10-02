@@ -16,7 +16,8 @@ content.innerHTML = `
   <div class="card markdown">
     <p><strong>Eventlink / Companion</strong>: copy all rounds of the pairings and paste them as they are, one value per line
       (table, player, record, game score, opponent, record). Byes, playoffs and missing table numbers are handled.
-      Paste one event per upload.</p>
+      Paste one event per upload. If you exported each round separately, pick all the files at once on the upload page.
+      They are combined in round order.</p>
     <pre>1
 Alice Novak
 1–0–0
@@ -34,8 +35,11 @@ Alice Novak vs Bob Horvath 2-1
 Carol Svoboda vs Dave Dvorak 1-1-1
 Eve Cerna - BYE</pre>
     <p><strong>JSON</strong>:</p>
-    <pre>{"name": "FNM", "date": "2026-09-12", "type": "rel",
+    <pre>{"name": "FNM", "date": "2026-09-12", "type": "rel", "format": "modern",
+ "link": "https://example.com/fnm-results",
  "rounds": [{"round": 1, "matches": [{"player1": "Alice", "player2": "Bob", "result": "2-1"}]}]}</pre>
+    <p>Every tournament has a format (Modern, Limited, Duel Commander, EDH, Legacy, Vintage or Premodern) and can have a link to its
+      public page, such as the Eventlink event or the store's results post, so anyone can check that it really took place.</p>
     <p>Player names must be spelled the same way in every tournament. Capital letters, accents (Jiri = Jiří), emoji and extra spaces are ignored.</p>
   </div>
 

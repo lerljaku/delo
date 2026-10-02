@@ -1,13 +1,16 @@
-"""Replay all tournaments through the Elo model and derive per-player stats.
+"""Replay tournaments through the Elo model and derive per-player stats.
+
+compute_all replays everything from scratch. apply_tournament continues from stored ladder
+entries (their "state" holds the unrounded engine state) and gives the same result as a full
+replay, provided the new tournament sorts after every tournament already rated.
 
 Pure functions only: storage is handled by the caller.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 
-from .elo import DEFAULT_CONFIG, LADDERS, EloConfig, rate_match
+from .elo import DEFAULT_CONFIG, LADDER_IDS, MODEL_VERSION, EloConfig, ladder_includes, ladders_for, rate_match
 
 
 def _r(x: float) -> float:
@@ -31,8 +34,21 @@ class _PlayerState:
     best_win: int = 0
     best_loss: int = 0
     opponents: dict = field(default_factory=dict)   # opponentId -> [w, l, d]
-    history: list = field(default_factory=list)
+    history: list = field(default_factory=list)     # rows added by this replay only
     tournaments: list = field(default_factory=list)
+
+    @classmethod
+    def restore(cls, entry: dict) -> "_PlayerState":
+        s, st = entry["stats"], entry["state"]
+        return cls(
+            rating=st["rating"], peak=st["peak"], peak_date=s["peakDate"],
+            matches=s["matches"], wins=s["wins"], losses=s["losses"], draws=s["draws"],
+            game_wins=s["gameWins"], game_losses=s["gameLosses"], game_draws=s["gameDraws"],
+            cur_win=st["curWin"], cur_loss=st["curLoss"],
+            best_win=s["longestWinStreak"], best_loss=s["longestLossStreak"],
+            opponents={opp: list(wld) for opp, wld in st["opponents"].items()},
+            tournaments=list(reversed(entry["tournaments"])),
+        )
 
     def record(self, result: str, won: int, lost: int, drawn: int, opponent: str) -> None:
         self.matches += 1
@@ -77,13 +93,27 @@ def _result(won: int, lost: int) -> str:
     return "W" if won > lost else "L" if won < lost else "D"
 
 
+def sort_key(t: dict) -> tuple[str, str, str]:
+    """Rating order. Works for full tournaments and for stored tournament metadata."""
+    return t["date"], t.get("uploadedAt", ""), t.get("id") or t["tournamentId"]
+
+
 def sort_tournaments(tournaments: list[dict]) -> list[dict]:
-    return sorted(tournaments, key=lambda t: (t["date"], t.get("uploadedAt", ""), t["id"]))
+    return sorted(tournaments, key=sort_key)
 
 
-def compute_ladder(tournaments: list[dict], types: frozenset[str], cfg: EloConfig) -> dict[str, dict]:
-    """Return {playerId: ladder entry} for one ladder."""
-    states: dict[str, _PlayerState] = {}
+def can_resume(entry: dict) -> bool:
+    return entry.get("state", {}).get("modelVersion") == MODEL_VERSION
+
+
+def compute_ladder(tournaments: list[dict], lid: str, cfg: EloConfig,
+                   prior: dict[str, dict] | None = None) -> dict[str, dict]:
+    """Return {playerId: ladder entry} for one ladder.
+
+    `prior` ({playerId: stored entry}) resumes from stored ratings; each returned entry's
+    history then holds only the rows added by these tournaments.
+    """
+    states = {pid: _PlayerState.restore(e) for pid, e in (prior or {}).items()}
 
     def state(pid: str) -> _PlayerState:
         if pid not in states:
@@ -91,7 +121,7 @@ def compute_ladder(tournaments: list[dict], types: frozenset[str], cfg: EloConfi
         return states[pid]
 
     for t in sort_tournaments(tournaments):
-        if t["type"] not in types:
+        if not ladder_includes(lid, t):
             continue
         weight = cfg.casual_weight if t["type"] == "casual" else 1.0
         standings = {s["playerId"]: s for s in t.get("standings", [])}
@@ -119,7 +149,7 @@ def compute_ladder(tournaments: list[dict], types: frozenset[str], cfg: EloConfi
                 score = f"{won}-{lost}-{m['draws']}"
                 delta = _r(st.rating - before)
                 st.history.append({
-                    "seq": len(st.history) + 1, "date": t["date"], "tournamentId": t["id"],
+                    "seq": st.matches, "date": t["date"], "tournamentId": t["id"],
                     "round": m["round"], "opponentId": opp, "result": res, "score": score,
                     "ratingBefore": _r(before), "ratingAfter": _r(st.rating), "delta": delta,
                 })
@@ -131,6 +161,7 @@ def compute_ladder(tournaments: list[dict], types: frozenset[str], cfg: EloConfi
             s = standings.get(pid, {})
             st.tournaments.append({
                 "tournamentId": t["id"], "name": t["name"], "date": t["date"], "type": t["type"],
+                "format": t.get("format"),
                 "wins": sum(x["result"] == "W" for x in matches),
                 "losses": sum(x["result"] == "L" for x in matches),
                 "draws": sum(x["result"] == "D" for x in matches),
@@ -158,22 +189,47 @@ def compute_ladder(tournaments: list[dict], types: frozenset[str], cfg: EloConfi
             },
             "tournaments": list(reversed(st.tournaments)),
             "history": st.history,
+            "state": {"modelVersion": MODEL_VERSION, "rating": st.rating, "peak": st.peak,
+                      "curWin": st.cur_win, "curLoss": st.cur_loss, "opponents": st.opponents},
         }
     return out
 
 
-def compute_all(tournaments: list[dict], cfg: EloConfig = DEFAULT_CONFIG) -> dict:
-    """Return {"names": {playerId: name}, "ladders": {ladder: {playerId: entry}}}.
-
-    A player's display name is their most frequently used spelling (ties: most recent).
+def _names(tournaments: list[dict], spellings: dict[str, dict]) -> dict:
+    """Count each player's spellings ({name: [count, *sort_key of last use]}) and pick the
+    display name: the most frequently used spelling, ties going to the most recently used.
     """
-    spellings: dict[str, Counter] = {}
-    for order, t in enumerate(sort_tournaments(tournaments)):
+    touched = set()
+    for t in sort_tournaments(tournaments):
         for pid, name in t["players"].items():
-            spellings.setdefault(pid, Counter())[name] += 1
-            spellings[pid][name] += order / 1e6  # tie-break towards later tournaments
-    names = {pid: c.most_common(1)[0][0] for pid, c in spellings.items()}
+            counts = spellings.setdefault(pid, {})
+            counts[name] = [counts.get(name, [0])[0] + 1, *sort_key(t)]
+            touched.add(pid)
     return {
-        "names": names,
-        "ladders": {ladder: compute_ladder(tournaments, types, cfg) for ladder, types in LADDERS.items()},
+        "names": {pid: max(spellings[pid].items(), key=lambda kv: kv[1])[0] for pid in touched},
+        "spellings": {pid: spellings[pid] for pid in touched},
+    }
+
+
+def compute_all(tournaments: list[dict], cfg: EloConfig = DEFAULT_CONFIG) -> dict:
+    """Return {"names": {playerId: name}, "spellings": {playerId: {...}},
+    "ladders": {ladderId: {playerId: entry}}} with every ladder, including empty ones.
+    """
+    return {
+        **_names(tournaments, {}),
+        "ladders": {lid: compute_ladder(tournaments, lid, cfg) for lid in LADDER_IDS},
+    }
+
+
+def apply_tournament(t: dict, prior: dict[str, dict[str, dict]], spellings: dict[str, dict],
+                     cfg: EloConfig = DEFAULT_CONFIG) -> dict:
+    """Rate one more tournament on top of stored results; same shape as compute_all, but only
+    with the ladders and players it touches.
+
+    prior: {ladderId: {playerId: stored entry}} for the players of `t` in ladders_for(t).
+    spellings: {playerId: stored spellings} for the players of `t`.
+    """
+    return {
+        **_names([t], {pid: dict(s) for pid, s in spellings.items()}),
+        "ladders": {lid: compute_ladder([t], lid, cfg, prior.get(lid)) for lid in ladders_for(t)},
     }

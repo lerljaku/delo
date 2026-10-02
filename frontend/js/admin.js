@@ -26,7 +26,9 @@ async function loadClaims() {
 async function loadPlayers() {
   const select = document.getElementById("player-select");
   const players = (await api("/leaderboard", { query: { ladder: "all" } })).players;
-  select.innerHTML = players.map((p) => `<option value="${esc(p.playerId)}">${esc(p.displayName)} (${esc(p.playerId)})${p.hidden ? " · hidden" : ""}${p.membership ? ` · ${esc(p.membership)}` : ""}</option>`).join("");
+  const options = players.map((p) => `<option value="${esc(p.playerId)}">${esc(p.displayName)} (${esc(p.playerId)})${p.hidden ? " · hidden" : ""}${p.membership ? ` · ${esc(p.membership)}` : ""}</option>`).join("");
+  select.innerHTML = options;
+  document.getElementById("erase-select").innerHTML = options;
 }
 
 if (!currentUser()?.isAdmin) {
@@ -43,6 +45,15 @@ if (!currentUser()?.isAdmin) {
       <label class="field">Name visibility<select name="hidden"><option value="">Visible</option><option value="1">Hidden</option></select></label>
       <label class="field">Membership<select name="membership"><option value="">None</option><option value="supporter">Supporter</option><option value="diamond">Diamond</option></select></label>
     </div><button class="primary">Save</button><div id="player-msg"></div></form>
+
+    <h2>Erase player (GDPR)</h2>
+    <p class="secondary">For removal requests under the <a href="privacy.html">privacy notice</a>. Replaces the player's name with
+      “Deleted player” in every tournament, including the original uploads, and in all future uploads. Matches stay, so other
+      players' ratings don't change. Unlinks any account. Cannot be undone. Hidden players are listed as “Hidden player”, so
+      identify them by id.</p>
+    <form id="erase-form" class="card"><div class="form-grid">
+      <label class="field">Player<select id="erase-select"></select></label></div>
+      <button class="secondary">Erase player</button><div id="erase-msg"></div></form>
 
     <h2>Recalculate ratings</h2>
     <p class="secondary">Replays every tournament through the current Elo model. Run it after changing the model.</p>
@@ -69,6 +80,19 @@ if (!currentUser()?.isAdmin) {
         method: "POST", body: { hidden: !!f.hidden.value, membership: f.membership.value },
       });
       msg.innerHTML = '<div class="msg ok">Saved.</div>';
+      loadPlayers();
+    } catch (err) { showError(msg, err); }
+  });
+
+  document.getElementById("erase-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const select = document.getElementById("erase-select");
+    const msg = document.getElementById("erase-msg");
+    const label = select.selectedOptions[0]?.textContent;
+    if (!label || !confirm(`Erase ${label}? Their name is removed from all results for good.`)) return;
+    try {
+      const r = await api(`/admin/players/${select.value}/erase`, { method: "POST", body: {} });
+      msg.innerHTML = `<div class="msg ok">Erased from ${r.tournaments} tournament(s).</div>`;
       loadPlayers();
     } catch (err) { showError(msg, err); }
   });

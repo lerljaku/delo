@@ -1,6 +1,9 @@
 # Copy to terraform.tfvars and adjust. terraform.tfvars is git-ignored.
-project      = "esl"
-environment  = "prod"
-region       = "eu-west-1"
-github_repo  = "https://github.com/lerljaku/esl"
-admin_emails = ["lerljaku@gmail.com"]
+project         = "delo"
+environment     = "prod"
+region          = "eu-west-1"
+domain_name     = "mtgdelo.com"         # register it in Route 53 first; leave "" to use the cloudfront.net address
+operator_name   = "Your Name"           # data controller shown on the privacy page
+privacy_contact = "privacy@example.com" # email for privacy requests
+github_repo     = "https://github.com/lerljaku/delo"
+admin_emails    = ["lerljaku@gmail.com"]

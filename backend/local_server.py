@@ -1,4 +1,4 @@
-"""Run ESL locally without AWS: serves frontend/ and the API from one process.
+"""Run Delo locally without AWS: serves frontend/ and the API from one process.
 
     py backend/local_server.py [--port 8000] [--data .localdata] [--seed [--source DIR]]
 
@@ -20,13 +20,16 @@ from urllib.parse import parse_qsl, urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
-from esl.api import App  # noqa: E402
-from esl.storage import LocalStorage  # noqa: E402
+from delo.api import App  # noqa: E402
+from delo.storage import LocalStorage  # noqa: E402
 from import_events import RAW_DATA, import_events  # noqa: E402
 
-LOCAL_CONFIG = """window.ESL_CONFIG = {
+LOCAL_CONFIG = """window.DELO_CONFIG = {
   apiBase: "/api",
-  githubRepo: "https://github.com/your-org/esl",
+  githubRepo: "https://github.com/your-org/delo",
+  operatorName: "Local Developer",
+  privacyContact: "privacy@example.com",
+  dataRegion: "eu-west-1",
   auth: { mode: "local" }
 };
 """
@@ -116,7 +119,7 @@ def main() -> None:
     if args.seed:
         seed(app, Path(args.source).resolve())
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
-    print(f"ESL running at http://127.0.0.1:{args.port}  (data: {args.data})")
+    print(f"Delo running at http://127.0.0.1:{args.port}  (data: {args.data})")
     server.serve_forever()
 
 
