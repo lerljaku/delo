@@ -1,4 +1,5 @@
 import { api, CONFIG, esc, markdown, renderNav, showError } from "./common.js";
+import { renderEloFormula } from "./elo.js";
 
 renderNav("docs.html");
 const content = document.getElementById("content");
@@ -9,13 +10,15 @@ content.innerHTML = `
     <div class="tile"><div class="label">Found a bug?</div><div class="value" style="font-size:1rem"><a href="${esc(repo)}/issues/new?labels=bug" rel="noopener">Report a bug on GitHub</a></div></div>
     <div class="tile"><div class="label">Have an idea?</div><div class="value" style="font-size:1rem"><a href="${esc(repo)}/issues/new?labels=enhancement" rel="noopener">Request a feature</a></div></div>
     <div class="tile"><div class="label">Wrong result or name?</div><div class="value" style="font-size:1rem"><a href="${esc(repo)}/issues/new?labels=data" rel="noopener">Report a data problem</a></div></div>
-    <div class="tile"><div class="label">Ratings</div><div class="value" style="font-size:1rem"><a href="elo.html">How Elo is calculated</a></div></div>
+    <div class="tile"><div class="label">Ratings</div><div class="value" style="font-size:1rem"><a href="#elo">How Elo is calculated</a></div></div>
   </div>
 
   <h2 id="formats">Upload formats</h2>
   <div class="card markdown">
     <p><strong>Eventlink / Companion</strong>: copy all rounds of the pairings and paste them as they are, one value per line
-      (table, player, record, game score, opponent, record). Byes, playoffs and missing table numbers are handled.
+      (table, player, record, game score, opponent, record). The game score is player 1's wins, then player 2's:
+      21 = 2–1. With drawn games it has 3 digits, the draws in the middle: 030 = no wins and 3 draws, an intentional
+      draw. Drawn matches don't change Elo. Byes, playoffs and missing table numbers are handled.
       Paste one event per upload. If you exported each round separately, pick all the files at once on the upload page.
       They are combined in round order.</p>
     <pre>1
@@ -43,8 +46,15 @@ Eve Cerna - BYE</pre>
     <p>Player names must be spelled the same way in every tournament. Capital letters, accents (Jiri = Jiří), emoji and extra spaces are ignored.</p>
   </div>
 
+  <h2 id="elo">How ratings are calculated</h2>
+  <div id="elo-formula" class="card"><p class="muted">Loading…</p></div>
+
   <h2>Release notes</h2>
   <div id="notes"><p class="muted">Loading…</p></div>`;
+
+renderEloFormula(document.getElementById("elo-formula")).then(() => {
+  if (location.hash === "#elo") document.getElementById("elo").scrollIntoView(); // content loaded after the jump
+});
 
 (async () => {
   const box = document.getElementById("notes");

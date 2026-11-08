@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars and adjust. terraform.tfvars is git-ignored.
-project         = "delo"
+project         = "mtgdelo"
 environment     = "prod"
 region          = "eu-west-1"
 domain_name     = "mtgdelo.com"         # register it in Route 53 first; leave "" to use the cloudfront.net address
@@ -7,3 +7,10 @@ operator_name   = "Your Name"           # data controller shown on the privacy p
 privacy_contact = "privacy@example.com" # email for privacy requests
 github_repo     = "https://github.com/lerljaku/delo"
 admin_emails    = ["lerljaku@gmail.com"]
+
+# Memberships, see README → Payments. Empty links show "Coming soon" instead of a Buy button.
+show_membership       = false # true: show the Membership page, nav link and upsells
+stripe_supporter_link = "" # https://buy.stripe.com/... ($5 one-time)
+stripe_diamond_link   = "" # https://buy.stripe.com/... ($5/month)
+stripe_portal_link    = "" # https://billing.stripe.com/p/login/...
+stripe_webhook_secret = "" # whsec_... of <site_url>/api/stripe/webhook

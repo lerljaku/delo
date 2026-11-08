@@ -1,6 +1,7 @@
 import {
-  api, badge, esc, fmtPct, fmtRating, formatSelect, getFormat, getLadder, HIDDEN_NAME, ladderToggle, playerLink, renderNav, showError,
+  api, badge, esc, flairBadge, fmtPct, fmtRating, formatSelect, getFormat, getLadder, HIDDEN_NAME, ladderToggle, playerLink, renderNav, showError,
 } from "./common.js";
+import { mountUpcoming } from "./upcoming.js";
 
 renderNav("index.html");
 const content = document.getElementById("content");
@@ -8,7 +9,7 @@ const search = document.getElementById("search");
 let rows = [];
 let ladder = getLadder();
 let format = getFormat();
-let minMatches = 1;
+let minMatches = 10;
 
 // key: [header, value to sort by, first direction when clicked (1 = ascending)]
 const COLUMNS = {
@@ -45,7 +46,7 @@ function rankedTable(list) {
     <thead><tr>${Object.keys(COLUMNS).map(header).join("")}</tr></thead>
     <tbody>${list.map((r) => `<tr>
       <td class="num">${r.rank}</td>
-      <td>${playerLink(r.playerId, r.displayName, ladder, format)}${badge(r.membership)}</td>
+      <td>${playerLink(r.playerId, r.displayName, ladder, format)}${r.rank === 1 ? ' <span class="crown" title="#1 on this leaderboard" aria-label="Number one">👑</span>' : ""}${badge(r.membership)}${flairBadge(r.flair, r.flairColor)}</td>
       <td class="num"><strong>${fmtRating(r.rating)}</strong></td>
       <td class="num muted">${fmtRating(r.summary.peakRating)}</td>
       <td class="num">${r.summary.wins}-${r.summary.losses}-${r.summary.draws}</td>
@@ -58,10 +59,10 @@ function rankedTable(list) {
 function provisionalTable(list) {
   if (!list.length) return "";
   return `<details class="provisional"><summary><h2>Provisional players (${list.length})</h2></summary>
-    <p class="secondary">Players get a rank and an Elo after ${minMatches} rated matches. Byes don't count.</p>
+    <p class="secondary">Players get a rank and an Elo after ${minMatches} rated matches. Draws and byes don't count.</p>
     <div class="table-wrap"><table><thead><tr><th>Player</th><th class="num">Rated matches</th><th class="num">W-L-D</th><th class="num">Win rate</th></tr></thead>
-    <tbody>${list.map((r) => `<tr><td>${playerLink(r.playerId, r.displayName, ladder, format)}${badge(r.membership)}</td>
-      <td class="num">${r.summary.matches} / ${minMatches}</td><td class="num">${r.summary.wins}-${r.summary.losses}-${r.summary.draws}</td>
+    <tbody>${list.map((r) => `<tr><td>${playerLink(r.playerId, r.displayName, ladder, format)}${badge(r.membership)}${flairBadge(r.flair, r.flairColor)}</td>
+      <td class="num">${r.summary.wins + r.summary.losses} / ${minMatches}</td><td class="num">${r.summary.wins}-${r.summary.losses}-${r.summary.draws}</td>
       <td class="num">${fmtPct(r.summary.winrate)}</td></tr>`).join("")}</tbody></table></div></details>`;
 }
 
@@ -69,7 +70,7 @@ function render() {
   const q = search.value.trim().toLowerCase();
   const visible = rows.filter((r) => !q || (r.displayName !== HIDDEN_NAME && r.displayName.toLowerCase().includes(q)));
   if (!rows.length) {
-    content.innerHTML = `<div class="msg">No rated players ${format ? "in this format " : ""}yet. An admin needs to upload tournament results.</div>`;
+    content.innerHTML = `<div class="msg">No rated players ${format ? "in this format " : ""}yet. <a href="upload.html">Upload tournament results</a> to get started.</div>`;
     return;
   }
   const provisional = visible.filter((r) => r.provisional);
@@ -100,3 +101,4 @@ ladderToggle(document.getElementById("ladder"), (l) => { ladder = l; load(); });
 formatSelect(document.getElementById("format"), (f) => { format = f; load(); });
 search.addEventListener("input", render);
 load();
+mountUpcoming();

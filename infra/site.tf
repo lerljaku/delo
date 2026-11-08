@@ -145,6 +145,8 @@ locals {
     js   = "text/javascript; charset=utf-8"
     css  = "text/css; charset=utf-8"
     png  = "image/png"
+    jpg  = "image/jpeg"
+    jpeg = "image/jpeg"
     svg  = "image/svg+xml"
     ico  = "image/x-icon"
     json = "application/json"
@@ -161,6 +163,22 @@ resource "aws_s3_object" "frontend" {
   cache_control = "public, max-age=300"
 }
 
+# The Chrome extension (extension/), downloadable from the upload page
+data "archive_file" "extension" {
+  type        = "zip"
+  source_dir  = "${path.module}/../extension"
+  output_path = "${path.module}/build/mtgdelo-extension.zip"
+}
+
+resource "aws_s3_object" "extension" {
+  bucket        = aws_s3_bucket.site.id
+  key           = "mtgdelo-extension.zip"
+  source        = data.archive_file.extension.output_path
+  etag          = data.archive_file.extension.output_md5
+  content_type  = "application/zip"
+  cache_control = "public, max-age=300"
+}
+
 locals {
   frontend_config = {
     apiBase        = "/api"
@@ -168,6 +186,14 @@ locals {
     operatorName   = var.operator_name
     privacyContact = var.privacy_contact
     dataRegion     = var.region
+    features = {
+      membership = var.show_membership
+    }
+    payments = {
+      supporterLink = var.stripe_supporter_link
+      diamondLink   = var.stripe_diamond_link
+      portalLink    = var.stripe_portal_link
+    }
     auth = {
       mode        = "cognito"
       domain      = "https://${aws_cognito_user_pool_domain.users.domain}.auth.${var.region}.amazoncognito.com"

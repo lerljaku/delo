@@ -132,9 +132,9 @@ class AwsImportEventsTests(ImportEventsTests):
             z.writestr("x.py", "")
         names = {k: v for k, v in ENV.items() if k.endswith(("_TABLE", "_BUCKET"))}
         boto3.client("lambda").create_function(
-            FunctionName="delo-prod-api", Runtime="python3.13", Role=role, Handler="x.h",
+            FunctionName="mtgdelo-prod-api", Runtime="python3.13", Role=role, Handler="x.h",
             Code={"ZipFile": code.getvalue()}, Environment={"Variables": names})
-        return aws_storage("delo-prod-api", None, None)
+        return aws_storage("mtgdelo-prod-api", None, None)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 import {
-  api, badge, esc, fmtDelta, fmtPct, fmtRating, formatBadge, formatSelect, getFormat, getLadder, ladderLabel, ladderToggle, param, playerLink,
-  renderNav, resultCell, showError, typeBadge,
+  api, badge, esc, flairBadge, fmtDelta, fmtPct, fmtRating, formatBadge, formatSelect, getFormat, getLadder, ladderLabel, ladderToggle, param,
+  MEMBERSHIP_ENABLED, playerLink, renderNav, resultCell, showError, typeBadge,
 } from "./common.js";
+import { bindDeckInputs, deckDatalists, deckInput, deckLabel, loadOwnDecks } from "./decks.js";
 
 renderNav("");
 const content = document.getElementById("content");
-const pid = param("id");
+let pid = param("id"); // or ?u=<custom profile URL name> (Diamond), resolved in load()
 let ladder = getLadder();
 let format = getFormat();
 let chart = null;
@@ -85,35 +86,101 @@ function historyTable(history) {
     </tbody></table></div>`;
 }
 
-function tournamentHistory(tournaments, showElo = true) {
+// owner: set when the signed-in user views their own profile: {diamond, notes} adds a deck
+// picker and private match notes (Diamond; kept readable after).
+function tournamentHistory(tournaments, showElo = true, owner = null) {
+  const note = (t, m) => {
+    const text = owner?.notes[t.tournamentId]?.[String(m.round)] || "";
+    if (m.result === "BYE" || (!owner?.diamond && !text)) return "<td></td>";
+    return owner.diamond
+      ? `<td><input type="text" class="note-input" maxlength="1000" value="${esc(text)}" data-tid="${esc(t.tournamentId)}"
+          data-round="${m.round}" placeholder="Private note" aria-label="Private note for round ${m.round}"></td>`
+      : `<td class="muted">${esc(text)}</td>`;
+  };
   return tournaments.map((t) => `<details class="tournament"><summary>
-      <span class="name"><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a> ${typeBadge(t.type)}${formatBadge(t.format)}${t.deck ? ` <span class="deck" title="Deck">${esc(t.deck)}</span>` : ""}</span>
+      <span class="name"><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a> ${typeBadge(t.type)}${formatBadge(t.format)} <span data-deck-for="${esc(t.tournamentId)}">${deckLabel(t.deck)}</span></span>
       <span class="muted">${esc(t.date)}</span>
       <span>${t.rank ? `#${t.rank} of ${t.playerCount}` : ""}</span>
       <span class="num"><strong>${t.wins}-${t.losses}-${t.draws}</strong>${t.byes ? ` <span class="muted">(+${t.byes} bye)</span>` : ""}</span>
       ${showElo ? `<span class="num" title="Elo change in this tournament">${fmtDelta(t.delta)}</span>` : ""}</summary>
-      <table><thead><tr><th class="num">Round</th><th>Opponent</th><th>Result</th><th class="num">Games</th>${showElo ? '<th class="num">Elo change</th>' : ""}</tr></thead><tbody>
+      ${owner ? `<div class="deck-edit"><label>Your deck ${deckInput(t, t.deck)}</label></div>` : ""}
+      <table><thead><tr><th class="num">Round</th><th>Opponent</th><th>Result</th><th class="num">Games</th>${showElo ? '<th class="num">Elo change</th>' : ""}
+        ${owner ? '<th title="Only you can see these">Notes</th>' : ""}</tr></thead><tbody>
       ${t.matches.map((m) => `<tr><td class="num">${m.round}</td><td>${playerLink(m.opponentId, m.opponentName, ladder, format)}</td>
-        <td>${resultCell(m.result)}</td><td class="num">${esc(m.score)}</td>${showElo ? `<td class="num">${m.result === "BYE" ? "" : fmtDelta(m.delta)}</td>` : ""}</tr>`).join("")}
+        <td>${resultCell(m.result)}</td><td class="num">${esc(m.score)}</td>${showElo ? `<td class="num">${m.result === "BYE" ? "" : fmtDelta(m.delta)}</td>` : ""}
+        ${owner ? note(t, m) : ""}</tr>`).join("")}
       </tbody></table></details>`).join("");
 }
 
+// Diamond perks on your own page: matchups by opponent's deck and CSV export.
+function diamondSection() {
+  return `<h2>Your matchups by deck <span class="badge diamond">◆ Diamond</span></h2>
+    <p class="secondary">From the decks players entered. Only you can see this.
+      <button class="secondary" id="export-csv">Export my history (CSV)</button></p>
+    <div id="archetypes"><p class="muted">Loading…</p></div>`;
+}
+
+function archetypeTable(rows, label) {
+  if (!rows.length) return "";
+  return `<div class="table-wrap"><table><thead><tr><th>${label}</th><th class="num">Matches</th><th class="num">W-L-D</th><th class="num">Win rate</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><td>${esc(r.deck)}</td><td class="num">${r.matches}</td><td class="num">${r.wins}-${r.losses}-${r.draws}</td>
+      <td class="num">${fmtPct(r.winrate)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+async function bindOwner(owner) {
+  bindDeckInputs(content, (tid, deck) => {
+    content.querySelector(`span[data-deck-for="${CSS.escape(tid)}"]`).innerHTML = deckLabel(deck);
+  });
+  content.querySelectorAll("input.note-input").forEach((input) => input.addEventListener("change", async () => {
+    input.classList.remove("saved", "failed");
+    try {
+      await api(`/me/notes/${encodeURIComponent(input.dataset.tid)}`, { method: "POST", body: { round: Number(input.dataset.round), note: input.value } });
+      input.classList.add("saved");
+    } catch (err) {
+      input.classList.add("failed");
+      input.title = err.message;
+    }
+  }));
+  if (!owner.diamond) return;
+  document.getElementById("export-csv").addEventListener("click", async (e) => {
+    try {
+      const r = await api("/me/export");
+      const a = Object.assign(document.createElement("a"), {
+        href: URL.createObjectURL(new Blob([r.csv], { type: "text/csv" })), download: r.filename,
+      });
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) { e.target.textContent = err.message; }
+  });
+  const box = document.getElementById("archetypes");
+  try {
+    const a = await api("/me/archetypes");
+    box.innerHTML = archetypeTable(a.byOpponentDeck, "Opponent's deck") + archetypeTable(a.byOwnDeck, "Your deck")
+      || '<p class="muted">No rated matches yet.</p>';
+  } catch (err) { showError(box, err); }
+}
+
 async function load() {
-  if (!pid) return showError(content, "No player selected");
   content.innerHTML = '<p class="muted">Loading…</p>';
   try {
+    if (!pid && param("u")) pid = (await api(`/players/by-slug/${encodeURIComponent(param("u"))}`)).playerId;
+    if (!pid) return showError(content, "No player selected");
     const query = { ladder, format };
-    const [p, h] = await Promise.all([api(`/players/${pid}`, { query }), api(`/players/${pid}/history`, { query })]);
+    const [p, h, own] = await Promise.all([api(`/players/${pid}`, { query }), api(`/players/${pid}/history`, { query }),
+      loadOwnDecks().catch(() => null)]);
+    const mine = own?.playerId === pid ? own : null; // the signed-in user's own, verified profile
+    const owner = mine && { diamond: mine.membership === "diamond", notes: (await api("/me/notes")).notes };
     const s = p.stats;
     document.title = `${p.displayName} · Delo`;
     content.innerHTML = `
-      <h1 class="${p.hidden ? "hidden-name" : ""}">${esc(p.displayName)}${badge(p.membership)}</h1>
-      <p class="secondary">${p.provisional ? `Provisional: ${s.matches} of ${p.minMatches} rated matches` : `Rank #${p.rank} of ${p.playerCount}`}
+      <h1 class="${p.hidden ? "hidden-name" : ""}">${esc(p.displayName)}${p.rank === 1
+        ? ` <span class="crown" title="#1 on the ${esc(ladderLabel(ladder, format))} leaderboard" aria-label="Number one">👑</span>` : ""}${badge(p.membership)}${flairBadge(p.flair, p.flairColor)}</h1>
+      <p class="secondary">${p.provisional ? `Provisional: ${s.wins + s.losses} of ${p.minMatches} rated matches` : `Rank #${p.rank} of ${p.playerCount}`}
         · ${ladderLabel(ladder, format)} ladder</p>
       <div class="toolbar"><div id="ladder"></div><div id="format"></div></div>
       <div class="tiles">
         ${p.provisional
-          ? tile("Elo", '<span class="muted">Provisional</span>', `shown after ${p.minMatches} rated matches, ${p.minMatches - s.matches} to go`)
+          ? tile("Elo", '<span class="muted">Provisional</span>', `shown after ${p.minMatches} rated matches, ${p.minMatches - s.wins - s.losses} to go`)
           : `${tile("Elo", fmtRating(p.rating))}${tile("Peak Elo", fmtRating(s.peakRating), s.peakDate ? esc(s.peakDate) : "")}`}
         ${tile("Win rate", fmtPct(s.winrate), `${s.wins}-${s.losses}-${s.draws} (W-L-D)`)}
         ${tile("Matches", s.matches, `${s.tournamentCount} tournament${s.tournamentCount === 1 ? "" : "s"}`)}
@@ -127,11 +194,16 @@ async function load() {
       ${p.provisional ? "" : `<h2>Elo history</h2>
       <div class="card chart-card"><canvas id="elo-chart" role="img" aria-label="Elo rating after each rated match"></canvas></div>
       <details style="margin-top:8px"><summary class="secondary">Show as table</summary>${historyTable(h.history)}</details>`}
+      ${owner?.diamond ? diamondSection() : ""}
       <h2>Tournament history</h2>
-      ${tournamentHistory(p.tournaments, !p.provisional) || '<p class="muted">No tournaments.</p>'}`;
+      ${mine ? `<p class="secondary">This is you: open a tournament to set the deck you played${owner.diamond ? " and private notes" : ""}.
+        ${owner.diamond || !MEMBERSHIP_ENABLED ? "" : 'Private match notes and matchup stats come with <a href="membership.html">Diamond</a>.'}</p>
+        ${deckDatalists(mine)}` : ""}
+      ${tournamentHistory(p.tournaments, !p.provisional, owner) || '<p class="muted">No tournaments.</p>'}`;
     ladderToggle(document.getElementById("ladder"), (l) => { ladder = l; load(); });
     formatSelect(document.getElementById("format"), (f) => { format = f; load(); });
     if (!p.provisional) renderChart(h.history, h.initialRating);
+    if (owner) bindOwner(owner);
   } catch (err) {
     if (err.status === 404 && err.data?.availableLadders) {
       const other = err.data.availableLadders[0];

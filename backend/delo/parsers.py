@@ -207,7 +207,8 @@ def parse_eventlink(content: str) -> list[dict]:
         1               table number (sometimes missing, e.g. playoffs)
         Alice           player A
         1–0–0           A's record after this match (W–L–D)
-        21              game score: A won 2, B won 1 (optional 3rd digit = drawn games)
+        21              game score: A won 2, B won 1. With drawn games 3 digits, the draws in the
+                        middle: 211 = A 2, 1 draw, B 1; 030 = no wins, 3 draws (an intentional draw)
         Bob             player B, or "Bye"
         0–1–0           B's record (absent for a bye)
 
@@ -242,7 +243,8 @@ def parse_eventlink(content: str) -> list[dict]:
             p1, rec1, score, p2, rec2 = window
             if not _SCORE_RE.match(score):
                 raise ParseError(f"line {lines[pos + 2][0]}: game score '{score}' should look like 21 or 02")
-            w1, w2, d = int(score[0]), int(score[1]), int(score[2]) if len(score) == 3 else 0
+            # A's wins, [drawn games,] B's wins
+            w1, d, w2 = (int(score[0]), int(score[1]), int(score[2])) if len(score) == 3 else (int(score[0]), 0, int(score[1]))
             recs = [rec1, rec2]
             pos += 5
         else:

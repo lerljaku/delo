@@ -110,6 +110,9 @@ th button.sort .arrow { font-size: 0.65rem; min-width: 0.7em; }
 .delta-pos { color: var(--good-text); }
 .delta-neg { color: var(--critical); }
 .deck { font-size: 0.8rem; color: var(--text-secondary); font-style: italic; margin-left: 6px; font-weight: normal; }
+details.tournament .deck-edit { padding: 8px 14px; border-top: 1px solid var(--grid); }
+details.tournament .deck-edit label { display: flex; gap: 10px; align-items: center; font-size: 0.85rem; color: var(--text-secondary); }
+details.tournament .deck-edit .deck-input { max-width: 320px; }
 .deck-input { width: 100%; min-width: 160px; }
 .deck-status { font-size: 0.8rem; margin-left: 6px; }
 .elo-change { font-size: 0.85rem; margin-left: 6px; font-variant-numeric: tabular-nums; }
@@ -145,3 +148,88 @@ details.tournament table { border-top: 1px solid var(--grid); }
 footer { text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 24px; }
 pre { background: var(--surface-2); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
 .tile .value.name { font-size: 1.05rem; padding-top: 6px; }
+
+/* Layout with the "Upcoming tournaments" sidebar. The leaderboard keeps the normal page width and
+   position (1068px wide, centred like every other page, so it lines up with the navigation); the
+   sidebar fills everything to its right, up to the window edge. Columns: a left gutter that
+   centres the content (it gives up space first when the window narrows), the content, the sidebar
+   (at least 280px). Below 1408px (1068 + 28 + 280 + 32) the sidebar goes under the content. */
+main.with-sidebar { max-width: none; }
+.with-aside { display: grid; grid-template-columns: minmax(0, calc((100% - 1068px) / 2)) 1068px minmax(308px, 1fr);
+  align-items: start; } /* 308 = 280px sidebar + its 28px gap; the content never shrinks, the gutter gives way */
+.with-aside > :first-child { grid-column: 2; }
+.with-aside > aside { grid-column: 3; margin-left: 28px; }
+/* The sidebar stays in view while the leaderboard scrolls, and scrolls on its own when its
+   list is taller than the window. Stacked below, it's a normal block. */
+aside.upcoming { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
+  position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: none; } /* still scrolls (wheel, touch, keys); no visible scrollbar */
+aside.upcoming::-webkit-scrollbar { display: none; } /* Safari, older Chrome */
+@media (max-width: 1407px) {
+  main.with-sidebar { max-width: 1100px; }
+  .with-aside { grid-template-columns: minmax(0, 1fr); row-gap: 28px; }
+  .with-aside > :first-child, .with-aside > aside { grid-column: 1; margin-left: 0; }
+  aside.upcoming { position: static; max-height: none; overflow: visible; }
+}
+aside.upcoming h2 { margin: 0 0 10px; font-size: 1rem; }
+ul.events { list-style: none; margin: 0; padding: 0; }
+li.event { padding: 8px 0; border-bottom: 1px solid var(--grid); }
+li.event:last-child { border-bottom: 0; }
+.event-date { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.event-name { font-weight: 600; }
+.event-meta .badge:first-child { margin-left: 0; }
+.event-meta { font-size: 0.8rem; }
+button.link-button { all: unset; cursor: pointer; color: var(--critical); font-size: 0.75rem; }
+details.post-event { margin-top: 12px; }
+details.post-event summary { cursor: pointer; color: var(--accent); }
+details.post-event form { display: grid; gap: 8px; margin-top: 8px; }
+.small { font-size: 0.8rem; }
+
+/* membership */
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 16px 0; }
+.plan h2 { margin: 0; }
+.plan .price { font-size: 1.4rem; font-weight: 700; margin: 4px 0 8px; }
+.plan ul { padding-left: 18px; margin: 0 0 14px; }
+.plan-supporter { border-color: var(--badge-supporter); }
+.plan-diamond { border-color: var(--badge-diamond); border-width: 2px; }
+a.button.primary { background: var(--accent); color: #fff; text-decoration: none; }
+
+/* Supporter flair */
+.badge.flair { font-weight: 600; }
+.flair-blue { background: #2a78d6; }
+.flair-green { background: #1c8a3a; }
+.flair-purple { background: #6d4bc4; }
+.flair-orange { background: #c96a0c; }
+.flair-red { background: #c43c3c; }
+.flair-gray { background: #6b6a66; }
+
+/* deck picker and Diamond private notes */
+.deck-fields { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input.note-input { width: 100%; min-width: 140px; font-size: 0.85rem; padding: 3px 6px; background: var(--surface-1); border: 1px solid var(--grid); border-radius: 4px; }
+input.note-input.saved { border-color: var(--good-text); }
+input.note-input.failed { border-color: var(--critical); }
+button.secondary.danger { border-color: var(--critical); color: var(--critical); }
+.event-repeats { font-size: 0.8rem; color: var(--text-secondary); }
+.event-holiday { font-size: 0.8rem; color: var(--critical); }
+
+/* Support page and Supporter mark */
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+a.button.support-button { white-space: nowrap; }
+.supporter-mark { margin-left: 6px; cursor: help; }
+.qr-codes { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+figure.qr { margin: 0; text-align: center; }
+figure.qr h2 { margin: 0 0 8px; }
+figure.qr img { display: block; width: 240px; height: 240px; max-width: 100%; border-radius: 6px; background: #fff; }
+
+/* admin: site visitors */
+.visitor-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
+.visitor-lists h3, #visitors h3 { font-size: 0.95rem; margin: 16px 0 8px; }
+.visitor-tiles { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+
+/* island picker (first item in the navigation) and the pending-claims badge on Admin */
+.topnav select.island-select { font-size: 0.9rem; font-weight: 600; padding: 4px 8px; max-width: 200px; }
+.topnav a[href="admin.html"] { position: relative; }
+.nav-badge { position: absolute; top: -8px; right: -14px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--critical); color: #fff; font-size: 0.7rem; font-weight: 700; line-height: 18px; text-align: center; }
+button.link-button + button.link-button { margin-left: 12px; }
+.event-location { font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px; }

@@ -1,7 +1,7 @@
 variable "project" {
-  description = "Project name, used as a prefix for all resources."
+  description = "Project name, used as a prefix for all resources. Changing it on a deployed stack would replace every table, bucket and the user pool (prevent_destroy stops that apply)."
   type        = string
-  default     = "delo"
+  default     = "mtgdelo"
 }
 
 variable "environment" {
@@ -34,10 +34,41 @@ variable "privacy_contact" {
   default     = ""
 }
 
+variable "show_membership" {
+  description = "Show the Membership page, nav link and upsells. Memberships set by admins work either way."
+  type        = bool
+  default     = false
+}
+
+variable "stripe_supporter_link" {
+  description = "Stripe Payment Link for Supporter (one-time payment), e.g. https://buy.stripe.com/... Empty: no Buy button."
+  type        = string
+  default     = ""
+}
+
+variable "stripe_diamond_link" {
+  description = "Stripe Payment Link for Diamond (monthly subscription)."
+  type        = string
+  default     = ""
+}
+
+variable "stripe_portal_link" {
+  description = "Stripe customer portal login link, where members manage or cancel their subscription."
+  type        = string
+  default     = ""
+}
+
+variable "stripe_webhook_secret" {
+  description = "Signing secret (whsec_...) of the Stripe webhook endpoint <site_url>/api/stripe/webhook."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "github_repo" {
   description = "GitHub repository URL used for 'Report an issue' links."
   type        = string
-  default     = "https://github.com/lerljaku/esl"
+  default     = "https://github.com/lerljaku/delo"
 }
 
 variable "admin_emails" {
@@ -56,6 +87,18 @@ variable "api_throttle_burst" {
   description = "API burst limit."
   type        = number
   default     = 50
+}
+
+variable "eventlink_throttle_rate" {
+  description = "Requests per second to the anonymous extension upload, POST /api/eventlink (all users together)."
+  type        = number
+  default     = 0.2
+}
+
+variable "eventlink_throttle_burst" {
+  description = "Burst limit of POST /api/eventlink."
+  type        = number
+  default     = 5
 }
 
 variable "log_retention_days" {

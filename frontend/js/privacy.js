@@ -24,10 +24,23 @@ document.getElementById("content").innerHTML = `
     <li><strong>Accounts</strong> (optional): your email address and password (stored by Amazon Cognito; we never see the
       password), the player profile you claim and the note you send with the claim. We use them to sign you in and to
       verify that a profile is yours (Art. 6(1)(b)).</li>
+    <li><strong>Payments</strong> (memberships): handled by Stripe, which processes your card and billing details under its own
+      privacy policy. We receive and store only your Stripe customer number, whether you have a membership, and its level
+      (to fulfil the purchase, Art. 6(1)(b)). Paid members can also save private match notes (visible only
+      to them) and a profile URL name. Anyone with a claimed profile can add a flair shown next to their name.</li>
+    <li><strong>Donations</strong> by bank transfer (Support page): we see the payer's name, account and payment message in our
+      bank statement, and use them only to mark the donor as a Supporter (Art. 6(1)(b)). Bank records are kept as accounting law requires.</li>
+    <li><strong>Upcoming tournaments</strong> posted by members: the details they enter, deleted two days after the event.</li>
+    <li><strong>Visitor statistics</strong>: when a page loads, we count a page view without cookies. To count each visitor only once
+      a day, your IP address and browser identifier are combined with a secret key into an anonymous code that changes every day and
+      can't be turned back into your address; the code is deleted within 2 days. We keep only daily totals: visitors, page views, which
+      pages were viewed and which websites linked to us (Art. 6(1)(f), to see how the site is used). Not counted if your browser sends
+      Do Not Track or Global Privacy Control.</li>
     <li><strong>Technical logs</strong>: error logs of the server, kept for 14 days, to keep the site running.</li>
   </ul>
   <p>We don't sell data, show ads or use tracking or analytics. The site stores your sign-in token and display
-    preferences (ladder, format) in your browser's local storage. These are not cookies and are never used for tracking.
+    preferences (ladder, format) in your browser's local storage, and the island you selected in one cookie, so it is
+    preselected when you come back. None of these is ever used for tracking.
     The player page loads the chart library from cdn.jsdelivr.net, which receives your IP address like any website you visit.</p>
 
   <h2>Where the data is stored</h2>

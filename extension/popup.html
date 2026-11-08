@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 340px; margin: 0; padding: 12px 14px; font: 13px/1.4 system-ui, sans-serif; color: #1d2433; }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    label { display: block; margin: 6px 0; }
+    input, select { display: block; box-sizing: border-box; width: 100%; margin-top: 2px; padding: 4px 6px; font: inherit; }
+    button { margin-top: 10px; padding: 6px 14px; font: inherit; cursor: pointer; }
+    .msg { margin: 8px 0; padding: 6px 8px; border-radius: 4px; background: #eef1f7; }
+    .error { background: #fde8e8; color: #8a1c1c; }
+    .ok { background: #e6f5ea; color: #1b5e2b; }
+    .muted { color: #667; font-size: 12px; }
+    details { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Upload to mtgdelo <span id="version" class="muted"></span></h1>
+  <div id="status" class="msg">Reading the event…</div>
+  <form id="form" hidden>
+    <label id="planned-field" hidden>Planned tournament <span class="muted">(fills in the details below)</span>
+      <select name="planned"></select></label>
+    <label>Tournament name<input name="name" required></label>
+    <label>Date<input name="date" type="date" required></label>
+    <label>Format<select name="format" required><option value="">Choose…</option></select></label>
+    <label>Type<select name="type">
+      <option value="rel">REL (official, prizes, entry fee)</option>
+      <option value="casual">Casual (pub / private games)</option></select></label>
+    <label id="island-field" hidden>Island<select name="island"></select></label>
+    <button type="submit" id="upload">Upload</button>
+    <p class="muted">No mtgdelo account needed. Uploading again is safe: the same results change nothing, new ones
+      (e.g. a round more) replace the earlier upload.</p>
+  </form>
+  <div id="result"></div>
+  <details>
+    <summary class="muted">Settings</summary>
+    <label>mtgdelo site<input id="site" placeholder="https://mtgdelo.com"></label>
+    <p class="muted">For local development: http://localhost:8000</p>
+  </details>
+  <script src="popup.js"></script>
+</body>
+</html>

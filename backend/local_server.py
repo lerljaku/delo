@@ -30,6 +30,8 @@ LOCAL_CONFIG = """window.DELO_CONFIG = {
   operatorName: "Local Developer",
   privacyContact: "privacy@example.com",
   dataRegion: "eu-west-1",
+  features: { membership: false },  // Terraform: show_membership
+  payments: {},  // Stripe Payment Links are configured in Terraform (stripe_*_link)
   auth: { mode: "local" }
 };
 """
@@ -60,7 +62,7 @@ def make_handler(app: App):
             except json.JSONDecodeError:
                 return self._json(400, {"error": "Body must be JSON"})
             status, payload = app.handle(method, url.path, dict(parse_qsl(url.query)), body,
-                                         dev_claims(self.headers.get("X-Dev-User")))
+                                         dev_claims(self.headers.get("X-Dev-User")), raw=raw, headers=dict(self.headers))
             self._json(status, payload)
 
         def _json(self, status: int, payload) -> None:

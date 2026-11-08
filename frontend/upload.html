@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Upload results · Delo</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/style.css">
   <script src="config.js"></script>
   <script type="module" src="js/upload.js"></script>
@@ -12,6 +13,22 @@
 <main>
 <h1>Upload tournament results</h1>
 <p class="secondary">Paste or pick a file. Supported formats: pairings copied from Eventlink/Companion, CSV, JSON and simple pairings. See <a href="docs.html#formats">upload formats</a>.</p>
-<div id="content"></div></main>
+<div id="content"></div>
+
+<section class="card" id="extension" style="margin-top:24px">
+  <h2 style="margin-top:0">👑 Upload straight from Eventlink</h2>
+  <p>The mtgdelo Chrome extension uploads an Eventlink tournament in one click, with no copying of pairings and
+    <strong>no mtgdelo account needed</strong>. It reads the results in your Eventlink tab, so your Eventlink login never
+    leaves your browser.</p>
+  <ol>
+    <li><a href="mtgdelo-extension.zip" download>Download the extension</a> and unzip it.</li>
+    <li>In Chrome open <code>chrome://extensions</code>, turn on <strong>Developer mode</strong>, click
+      <strong>Load unpacked</strong> and pick the unzipped folder.</li>
+    <li>Open the tournament in Eventlink, click the 👑 button in the toolbar, check the details and click
+      <strong>Upload</strong>.</li>
+  </ol>
+  <p class="muted small">Uploading again is safe: the same results change nothing, and after more rounds the earlier
+    upload is replaced. Events with unfinished matches are refused.</p>
+</section></main>
 </body>
 </html>

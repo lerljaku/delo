@@ -1,0 +1,75 @@
+.background-customizable {
+  background-color: #f9f9f7;
+}
+
+.banner-customizable {
+  padding: 18px 0px 18px 0px;
+  background-color: #fcfcfb;
+}
+
+.label-customizable {
+  font-weight: 600;
+  color: #52514e;
+}
+
+.textDescription-customizable {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  display: block;
+  font-size: 16px;
+  color: #52514e;
+}
+
+.legalText-customizable {
+  color: #898781;
+  font-size: 11px;
+}
+
+.submitButton-customizable {
+  font-size: 14px;
+  font-weight: bold;
+  margin: 20px 0px 10px 0px;
+  height: 40px;
+  width: 100%;
+  color: #ffffff;
+  background-color: #2a78d6;
+}
+
+.submitButton-customizable:hover {
+  color: #ffffff;
+  background-color: #1f63b5;
+}
+
+.errorMessage-customizable {
+  padding: 5px;
+  font-size: 14px;
+  width: 100%;
+  background: #fcfcfb;
+  border: 2px solid #d03b3b;
+  color: #d03b3b;
+}
+
+.inputField-customizable {
+  width: 100%;
+  height: 34px;
+  color: #0b0b0b;
+  background-color: #fcfcfb;
+  border: 1px solid #c3c2b7;
+}
+
+.inputField-customizable:focus {
+  border-color: #2a78d6;
+  outline: 0;
+}
+
+.redirect-customizable {
+  text-align: center;
+}
+
+.passwordCheck-notValid-customizable {
+  color: #d03b3b;
+}
+
+.passwordCheck-valid-customizable {
+  color: #006300;
+}

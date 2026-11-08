@@ -18,14 +18,19 @@ def new_anonymous_id() -> str:
     return secrets.token_hex(6)
 
 
-def anonymize(t: dict, pid: str, new_id: str) -> dict:
-    """Copy of tournament t with player pid replaced by new_id / ERASED_NAME."""
+def replace_player(t: dict, pid: str, new_id: str, name: str) -> dict:
+    """Copy of tournament t with player pid replaced by new_id, shown as `name` (erasure, merges)."""
     swap = lambda x: new_id if x == pid else x  # noqa: E731
     out = dict(t)
-    out["players"] = {swap(p): (ERASED_NAME if p == pid else name) for p, name in t["players"].items()}
+    out["players"] = {swap(p): (name if p == pid else n) for p, n in t["players"].items()}
     out["matches"] = [{**m, "p1": swap(m["p1"]), "p2": swap(m["p2"])} for m in t["matches"]]
     out["standings"] = [{**s, "playerId": swap(s["playerId"])} for s in t.get("standings", [])]
     return out
+
+
+def anonymize(t: dict, pid: str, new_id: str) -> dict:
+    """Copy of tournament t with player pid replaced by new_id / ERASED_NAME."""
+    return replace_player(t, pid, new_id, ERASED_NAME)
 
 
 def _player_ids(raw: str, source_format: str) -> set[str]:

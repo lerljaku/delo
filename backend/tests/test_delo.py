@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -43,7 +44,12 @@ def strip_results(storage) -> dict:
 class EloTests(unittest.TestCase):
     def test_expected_score(self):
         self.assertAlmostEqual(expected_score(1500, 1500), 0.5)
-        self.assertAlmostEqual(expected_score(1700, 1500), 0.7597, places=4)
+        self.assertAlmostEqual(expected_score(1700, 1500), 0.6, places=6)  # 200 points = 60%
+        self.assertAlmostEqual(expected_score(1500, 1700), 0.4, places=6)
+        # the article's table of rating differences for round percentages
+        table = {49: 0.525, 99: 0.55, 149: 0.575, 252: 0.625, 305: 0.65, 361: 0.675, 418: 0.70, 478: 0.725, 542: 0.75}
+        for diff, win in table.items():
+            self.assertAlmostEqual(expected_score(1500 + diff, 1500), win, delta=0.0015, msg=diff)
 
     def test_rate_match_equal_players(self):
         a, b = rate_match(DEFAULT_CONFIG, 1500, 1500, 1.0, 20, 20)
@@ -226,6 +232,46 @@ class EngineTests(unittest.TestCase):
         self.assertGreater(all_alice["stats"]["peakRating"], all_alice["rating"])
         self.assertEqual([h["seq"] for h in all_alice["history"]], [1, 2, 3, 4])
 
+    def test_draws_are_not_rated(self):
+        # A and B draw (e.g. an intentional draw into the top 8); C beats D
+        t = build_tournament(content="Round 1\nA vs B 1-1\nC vs D 2-0\nRound 2\nA vs B 0-0-3", name="x",
+                             date="2026-01-01", type="rel")
+        ladder = engine.compute_all([t])["ladders"]["rel"]
+        a, c = ladder[player_id("A")], ladder[player_id("C")]
+        self.assertEqual(a["rating"], 1500)
+        self.assertEqual([h["delta"] for h in a["history"]], [0.0, 0.0])  # listed, but no Elo change
+        self.assertEqual((a["stats"]["draws"], a["stats"]["matches"], a["stats"]["ratedMatches"]), (2, 2, 0))
+        self.assertGreater(c["rating"], 1500)
+        self.assertEqual(c["stats"]["ratedMatches"], 1)
+
+    def test_eventlink_scores_have_the_draws_in_the_middle(self):
+        # 030: no wins, 3 drawn games, an intentional draw; 110: A won 1, 1 drawn game, B won 0
+        text = "1\nA\n0–0–1\n030\nB\n0–0–1\n2\nC\n1–0–0\n110\nD\n0–1–0\n"
+        a_vs_b, c_vs_d = parse_eventlink(text)
+        self.assertEqual((a_vs_b["p1Wins"], a_vs_b["draws"], a_vs_b["p2Wins"]), (0, 3, 0))
+        self.assertEqual((c_vs_d["p1Wins"], c_vs_d["draws"], c_vs_d["p2Wins"]), (1, 1, 0))
+        ladder = engine.compute_all([build_tournament(content=text, name="x", date="2026-01-01", type="rel")])["ladders"]["rel"]
+        a, c = ladder[player_id("A")], ladder[player_id("C")]
+        self.assertEqual((a["rating"], a["stats"]["draws"], a["stats"]["ratedMatches"]), (1500, 1, 0))  # the draw isn't rated
+        self.assertEqual((c["stats"]["wins"], c["stats"]["ratedMatches"]), (1, 1))
+        self.assertGreater(c["rating"], 1500)
+
+    def test_draws_dont_use_up_the_provisional_k(self):
+        # ten draws, then a win: still the provisional K (48), as no rated match was played yet
+        rounds = [f"Round {r}\nA vs B 1-1" for r in range(1, 11)] + ["Round 11\nA vs B 2-0"]
+        t = build_tournament(content="\n".join(rounds), name="x", date="2026-01-01", type="rel")
+        a = engine.compute_all([t])["ladders"]["rel"][player_id("A")]
+        self.assertEqual(a["history"][-1]["delta"], 24.0)  # 48 * (1 - 0.5)
+
+    def test_winrate_ignores_draws(self):
+        t = build_tournament(content="Round 1\nA vs B 2-0\nRound 2\nA vs C 1-1-1\nRound 3\nC vs D 1-1", name="x",
+                             date="2026-01-01", type="rel")
+        stats = {name: engine.compute_all([t])["ladders"]["rel"][player_id(name)]["stats"] for name in "ABCD"}
+        self.assertEqual(stats["A"]["winrate"], 1.0)   # 1-0-1: the draw doesn't count against it
+        self.assertEqual(stats["B"]["winrate"], 0.0)   # 0-1-0
+        self.assertEqual(stats["C"]["winrate"], 0.0)   # 0-0-2: nothing decided yet
+        self.assertEqual(engine.winrate(2, 1), 0.6667)
+
     def test_bye_not_rated(self):
         t = build_tournament(content="Round 1\nA vs B 2-0\nC - BYE", name="x", date="2026-01-01", type="rel")
         c = engine.compute_all([t])["ladders"]["rel"][player_id("C")]
@@ -282,13 +328,138 @@ class ApiTests(unittest.TestCase):
         return LocalStorage(self.tmp.name)
 
     def setUp(self):
-        self.app = App(self.make_storage())
+        # tiny fixtures: rank everyone; test_provisional_players covers the real threshold
+        self.app = App(self.make_storage(), EloConfig(min_matches=1))
 
-    def test_upload_requires_admin(self):
-        status, _ = self.app.handle("POST", "/api/tournaments", {}, {"content": CSV}, USER)
-        self.assertEqual(status, 403)
-        status, _ = self.app.handle("POST", "/api/tournaments", {}, {"content": CSV}, {})
-        self.assertEqual(status, 401)
+    def test_any_user_uploads_only_admins_change_or_delete(self):
+        body = {"content": CSV, "name": "T", "date": "2026-01-01", "type": "rel", "format": "modern"}
+        self.assertEqual(self.app.handle("POST", "/api/tournaments", {}, body, {})[0], 401)  # signed out
+        status, r = self.app.handle("POST", "/api/tournaments", {}, body, USER)
+        self.assertEqual(status, 200, r)
+        tid = r["tournamentId"]
+        changed = {**body, "content": CSV.replace("1,Alice,Bob,2,1,0", "1,Alice,Bob,0,2,0")}
+        self.assertEqual(self.app.handle("POST", "/api/tournaments", {"replace": tid}, changed, USER)[0], 403)
+        self.assertEqual(self.app.handle("POST", f"/api/tournaments/{tid}", {}, {"format": "legacy"}, USER)[0], 403)
+        self.assertEqual(self.app.handle("DELETE", f"/api/tournaments/{tid}", {}, {}, USER)[0], 403)
+        # the uploader's email is not public; admins can see it
+        self.assertNotIn("uploadedBy", self.app.handle("GET", f"/api/tournaments/{tid}", {}, {}, {})[1])
+        self.assertNotIn("uploadedBy", self.app.handle("GET", "/api/tournaments", {}, {}, {})[1][0])
+        self.assertEqual(self.app.handle("GET", f"/api/admin/tournaments/{tid}", {}, {}, USER)[0], 403)
+        _, info = self.app.handle("GET", f"/api/admin/tournaments/{tid}", {}, {}, ADMIN)
+        self.assertEqual(info["uploadedBy"], USER["email"])
+        self.assertEqual(self.app.handle("DELETE", f"/api/tournaments/{tid}", {}, {}, ADMIN)[0], 200)
+
+    def eventlink(self, content=EVENTLINK, **extra):
+        body = {"content": content, "name": "Legacy", "date": "2026-10-18", "type": "rel", "format": "legacy",
+                "eventId": "12056192", "storeId": "11890", **extra}
+        return self.app.handle("POST", "/api/eventlink", {}, body, {})  # signed out
+
+    def test_extension_uploads_anonymously_once_per_event(self):
+        round1 = EVENTLINK[:EVENTLINK.index("Dave\n2–0–0")]
+        status, r = self.eventlink(round1)
+        self.assertEqual(status, 200, r)
+        first = r["tournamentId"]
+        t = self.app.handle("GET", f"/api/tournaments/{first}", {}, {}, {})[1]
+        self.assertEqual(t["link"], "https://eventlink.wizards.com/stores/11890/events/12056192")
+        self.assertEqual(self.app.handle("GET", f"/api/admin/tournaments/{first}", {}, {}, ADMIN)[1]["uploadedBy"],
+                         "Eventlink extension (anonymous)")
+        board = self.app.handle("GET", "/api/leaderboard", {}, {}, {})[1]
+
+        # clicked again: nothing changes, no second tournament, no ratings counted twice
+        self.assertEqual(self.eventlink(round1), (200, {"tournamentId": first, "unchanged": True}))
+        self.assertEqual(len(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]), 1)
+        self.assertEqual(self.app.handle("GET", "/api/leaderboard", {}, {}, {})[1], board)
+
+        # a round more: the earlier upload is replaced
+        status, r = self.eventlink()
+        self.assertEqual((status, r.get("updated"), r.get("replaced")), (200, True, first), r)
+        listed = self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]
+        self.assertEqual([m["tournamentId"] for m in listed], [r["tournamentId"]])
+        self.assertEqual(listed[0]["matchCount"], 4)
+
+        # another event is another tournament
+        self.assertEqual(self.eventlink(eventId="999", name="Modern")[0], 200)
+        self.assertEqual(len(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]), 2)
+
+    def test_extension_upload_validates(self):
+        for bad in ({"eventId": ""}, {"eventId": "12/../1"}, {"storeId": "x"}, {"format": ""}, {"content": "nonsense"}):
+            with self.subTest(bad):
+                self.assertEqual(self.eventlink(**bad)[0], 400)
+        self.assertEqual(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1], [])
+
+    def test_extension_upload_replaces_a_form_upload_of_the_event(self):
+        body = {"content": CSV, "name": "Legacy", "date": "2026-10-18", "type": "rel", "format": "legacy",
+                "link": "https://eventlink.wizards.com/stores/11890/events/12056192/rounds/1/pairings"}
+        _, r = self.app.handle("POST", "/api/tournaments", {}, body, USER)
+        status, again = self.eventlink()
+        self.assertEqual((status, again.get("replaced")), (200, r["tournamentId"]), again)
+        self.assertEqual(len(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]), 1)
+
+    def test_extension_double_click_race(self):
+        """Two clicks at once: both find no upload of the event; only the first saves it."""
+        storage = self.app.storage
+        claim = storage.claim_eventlink
+        results = []
+
+        def racing_claim(event_id, tid, expected):
+            if not results:  # the other click claims the event in between
+                results.append(None)
+                results[0] = self.eventlink()
+            return claim(event_id, tid, expected)
+
+        storage.claim_eventlink = racing_claim
+        status, r = self.eventlink()
+        self.assertEqual(results[0][0], 200, results[0])
+        self.assertEqual((status, r), (200, {"tournamentId": results[0][1]["tournamentId"], "unchanged": True}))
+        self.assertEqual(len(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]), 1)
+        storage.claim_eventlink = claim
+        # different results racing an upload of the event: the later one is refused, not lost silently
+        storage.claim_eventlink = lambda *a: False
+        self.assertEqual(self.eventlink(EVENTLINK[:EVENTLINK.index("Dave\n2–0–0")])[0], 409)
+
+    def test_background_jobs(self):
+        started = []
+        self.app.background = started.append  # run them by hand below
+        body = {"content": CSV, "name": "T", "date": "2026-01-01", "type": "rel", "format": "modern"}
+        self.assertEqual(self.app.handle("POST", "/api/tournaments", {"async": "1"}, body, {})[0], 401)  # checked first
+        dry = self.app.handle("POST", "/api/tournaments", {"async": "1", "dryRun": "1"}, body, USER)
+        self.assertEqual((dry[0], dry[1].get("dryRun")), (200, True))  # previews answer right away
+
+        status, r = self.app.handle("POST", "/api/tournaments", {"async": "1"}, body, USER)
+        self.assertEqual((status, r["status"], started), (202, "queued", [r["jobId"]]))
+        poll = lambda: self.app.handle("GET", f"/api/jobs/{r['jobId']}", {}, {}, {})  # noqa: E731
+        self.assertEqual(poll(), (200, {"jobId": r["jobId"], "status": "queued"}))
+        self.assertEqual(self.app.handle("GET", "/api/tournaments", {}, {}, {})[1], [])
+        self.app.run_job(r["jobId"])
+        self.app.run_job(r["jobId"])  # a retried invocation does nothing
+        status, job = poll()
+        self.assertEqual((job["status"], job["statusCode"]), ("done", 200), job)
+        tid = job["result"]["tournamentId"]
+        self.assertEqual([t["tournamentId"] for t in self.app.handle("GET", "/api/tournaments", {}, {}, {})[1]], [tid])
+        self.assertEqual(job["result"]["recalculation"]["mode"], "incremental")
+        self.assertNotIn("uploadedBy", job["result"])
+
+        # errors come back in the job, with the status code the request would have answered
+        _, r = self.app.handle("POST", "/api/tournaments", {"async": "1"}, body, USER)
+        self.app.run_job(r["jobId"])
+        _, job = self.app.handle("GET", f"/api/jobs/{r['jobId']}", {}, {}, {})
+        self.assertEqual((job["statusCode"], job["result"]["tournamentId"]), (409, tid))
+
+        _, r = self.app.handle("POST", "/api/admin/recalculate", {"async": "1"}, {}, ADMIN)
+        self.app.run_job(r["jobId"])
+        _, job = self.app.handle("GET", f"/api/jobs/{r['jobId']}", {}, {}, {})
+        self.assertEqual((job["statusCode"], job["result"]["mode"]), (200, "full"))
+        self.assertEqual(self.app.handle("GET", "/api/jobs/" + "0" * 32, {}, {}, {})[0], 404)
+        # routes that don't recalculate ignore async
+        self.assertNotEqual(self.app.handle("POST", "/api/me/profile", {"async": "1"}, {}, USER)[0], 202)
+
+    def test_stuck_job_ends_with_an_error(self):
+        self.app.background = lambda jid: None  # e.g. the invocation never ran
+        _, r = self.app.handle("POST", "/api/admin/recalculate", {"async": "1"}, {}, ADMIN)
+        self.assertEqual(self.app.handle("GET", f"/api/jobs/{r['jobId']}", {}, {}, {})[1]["status"], "queued")
+        with mock.patch("delo.api.JOB_STUCK_SECONDS", {"queued": -1, "running": -1}):
+            _, job = self.app.handle("GET", f"/api/jobs/{r['jobId']}", {}, {}, {})
+        self.assertEqual((job["status"], job["statusCode"]), ("done", 500))
 
     def test_upload_leaderboard_player_and_duplicate(self):
         status, body = upload(self.app, CSV, dryRun="1")
@@ -317,8 +488,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(again["tournaments"][0]["matches"][0]["opponentName"], "Bob")
 
     def test_provisional_players(self):
-        self.assertEqual(DEFAULT_CONFIG.min_matches, 1)
-        app = App(self.app.storage, EloConfig(min_matches=10))
+        self.assertEqual(DEFAULT_CONFIG.min_matches, 10)
+        app = App(self.app.storage)  # default: 10 rated matches for a rank
         # Alice and Bob play 10 matches; Carol 1 (plus a bye, which doesn't count), Dave 3
         rounds = [f"Round {r}\nAlice vs Bob {'2-0' if r % 3 else '0-2'}" for r in range(1, 11)]
         rounds[0] += "\nCarol - BYE"
@@ -387,7 +558,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((t["sourceFormat"], len(t["matches"])), ("eventlink", 6))
         self.assertEqual(t["ratingLadder"], {"ladder": "all", "format": "legacy"})
         changes = t["ratingChanges"]
-        self.assertEqual(set(changes), set(t["players"]))
+        # Eve only had a bye and a draw: no rated match, so provisional and no Elo change shown
+        self.assertEqual(set(changes), set(t["players"]) - {player_id("Eve")})
         _, alice = self.app.handle("GET", f"/api/players/{player_id('Alice')}", {"ladder": "all", "format": "legacy"}, {}, {})
         self.assertEqual(changes[player_id("Alice")]["delta"], alice["tournaments"][0]["delta"])
         self.assertEqual(changes[player_id("Carol")]["ratingBefore"], 1500)
@@ -404,6 +576,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(preview["sameLink"][0]["tournamentId"], body["tournamentId"])
         _, rows = self.app.handle("GET", "/api/tournaments", {}, {}, {})
         self.assertEqual((rows[0]["format"], rows[0]["link"]), ("modern", link))
+
+    def test_same_link_of_a_recurring_tournament_only_warns_on_the_same_date(self):
+        weekly, once = "https://example.com/modern-monday", "https://example.com/cup"
+        self.app.storage.put_upcoming({"eventId": "a1", "name": "Modern Monday", "date": "2026-01-05",
+                                       "recurrence": "weekly", "link": weekly, "createdBy": "x"})
+        self.app.storage.put_upcoming({"eventId": "b2", "name": "Cup", "date": "2026-01-05", "link": once, "createdBy": "x"})
+        _, first = upload(self.app, CSV, date="2026-01-05", link=weekly)
+        _, other_week = upload(self.app, "A vs B 2-0", date="2026-01-12", link=weekly, dryRun="1")
+        self.assertEqual(other_week["sameLink"], [])
+        _, same_day = upload(self.app, "A vs B 2-0", date="2026-01-05", link=weekly, dryRun="1")
+        self.assertEqual([m["tournamentId"] for m in same_day["sameLink"]], [first["tournamentId"]])
+        # a one-off event's link: another upload with it is suspicious on any date
+        upload(self.app, CSV, name="Cup", date="2026-01-05", link=once)
+        _, again = upload(self.app, "A vs B 2-0", name="Cup", date="2026-01-12", link=once, dryRun="1")
+        self.assertEqual(len(again["sameLink"]), 1)
 
     def test_update_tournament_format_and_link(self):
         _, body = upload(self.app, CSV)
@@ -433,6 +620,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         _, board = self.app.handle("GET", "/api/leaderboard", {"ladder": "rel"}, {}, {})
         self.assertEqual({r["displayName"] for r in board["players"]}, {"Alice", "Bob"})
+
+    def test_replace_with_corrected_results(self):
+        _, first = upload(self.app, CSV, name="FNM", date="2026-01-01", link="https://example.com/fnm")
+        old = first["tournamentId"]
+        self.app.handle("POST", "/api/me/claim", {}, {"playerId": player_id("Alice")}, USER)
+        self.app.handle("POST", f"/api/admin/claims/{USER['sub']}", {}, {"approve": True}, ADMIN)
+        self.app.handle("POST", f"/api/me/decks/{old}", {}, {"deck": "Kroxa"}, USER)
+        corrected = CSV.replace("1,Alice,Bob,2,1,0", "1,Alice,Bob,1,2,0")  # round 1 was reported the wrong way round
+        replace = {"replace": old}
+
+        self.assertEqual(upload(self.app, CSV, name="FNM", link="https://example.com/fnm", replace="nope")[0], 404)
+        _, same = upload(self.app, CSV, name="FNM", link="https://example.com/fnm", dryRun="1", **replace)
+        self.assertEqual((same["unchanged"], same["duplicate"], same["sameLink"]), (True, False, []))
+        self.assertEqual(upload(self.app, CSV, name="FNM", link="https://example.com/fnm", **replace)[0], 409)
+
+        _, preview = upload(self.app, corrected, name="FNM", link="https://example.com/fnm", dryRun="1", **replace)
+        self.assertEqual((preview["unchanged"], preview["sameLink"]), (False, []))  # its own link isn't a warning
+        status, r = upload(self.app, corrected, name="FNM", link="https://example.com/fnm", **replace)
+        self.assertEqual((status, r["replaced"], r["recalculation"]["mode"]), (200, old, "full"), r)
+        self.assertEqual(self.app.handle("GET", f"/api/tournaments/{old}", {}, {}, {})[0], 404)
+        self.assertEqual([m["tournamentId"] for m in self.app.storage.list_tournaments()], [r["tournamentId"]])
+        _, t = self.app.handle("GET", f"/api/tournaments/{r['tournamentId']}", {}, {}, {})
+        self.assertEqual(t["decks"], {player_id("Alice"): "Kroxa"})  # decks carried over
+        _, bob = self.app.handle("GET", f"/api/players/{player_id('Bob')}", {}, {}, {})
+        self.assertEqual(bob["stats"]["wins"], 1)  # ratings now reflect the corrected result
 
     def test_claim_approve_and_hide(self):
         upload(self.app, CSV)
@@ -547,6 +759,16 @@ class ApiTests(unittest.TestCase):
         other = {"sub": "user-2", "email": "alice2@x"}
         self.assertEqual(self.app.handle("POST", "/api/me/claim", {}, {"playerId": alice}, other)[0], 200)
 
+    def test_admin_marks_supporter(self):
+        upload(self.app, CSV)
+        alice = player_id("Alice")
+        self.app.handle("POST", f"/api/admin/players/{alice}", {}, {"hidden": True}, ADMIN)
+        status, prof = self.app.handle("POST", f"/api/admin/players/{alice}", {}, {"membership": "supporter"}, ADMIN)
+        self.assertEqual((status, prof["membership"], prof["hidden"]), (200, "supporter", True))  # still hidden
+        self.app.handle("POST", "/api/admin/recalculate", {}, {}, ADMIN)  # survives recalculation
+        row = next(r for r in self.app.handle("GET", "/api/leaderboard", {}, {}, {})[1]["players"] if r["playerId"] == alice)
+        self.assertEqual((row["membership"], row["displayName"]), ("supporter", HIDDEN_NAME))
+
     def test_release_notes(self):
         note = {"version": "0.1.0", "title": "First", "date": "2026-09-30", "body": "## Hi"}
         self.assertEqual(self.app.handle("POST", "/api/release-notes", {}, note, ADMIN)[0], 200)
@@ -592,6 +814,19 @@ class LambdaHandlerTests(unittest.TestCase):
         resp = self.api.lambda_handler(self.event("GET", "/api/leaderboard", query={"ladder": "rel"}), None)
         self.assertEqual(json.loads(resp["body"])["players"][0]["displayName"], "Alice")
         self.assertEqual(resp["headers"]["Content-Type"], "application/json")
+
+    def test_background_job_runs_in_its_own_invocation(self):
+        import json
+
+        invoked = []
+        self.api._app.background = invoked.append  # stands in for _invoke_self
+        resp = self.api.lambda_handler(self.event("POST", "/api/admin/recalculate", {}, {"async": "1"}, ADMIN), None)
+        self.assertEqual(resp["statusCode"], 202, resp["body"])
+        jid = json.loads(resp["body"])["jobId"]
+        self.assertEqual(invoked, [jid])
+        self.api.lambda_handler({"jobId": jid}, None)  # what Lambda receives from _invoke_self
+        job = json.loads(self.api.lambda_handler(self.event("GET", f"/api/jobs/{jid}"), None)["body"])
+        self.assertEqual((job["status"], job["statusCode"], job["result"]["mode"]), ("done", 200, "full"))
 
     def test_invalid_json_body(self):
         ev = self.event("POST", "/api/tournaments", claims=ADMIN)

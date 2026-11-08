@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .elo import DEFAULT_CONFIG, LADDER_IDS, MODEL_VERSION, EloConfig, ladder_includes, ladders_for, rate_match
+from .elo import DEFAULT_CONFIG, MODEL_VERSION, EloConfig, ladder_ids, ladder_includes, ladders_for, rate_match
 
 
 def _r(x: float) -> float:
     return round(x, 1)
+
+
+def winrate(wins: int, losses: int) -> float:
+    """Share of decided matches won: draws count neither way. 0 when nothing was decided yet."""
+    return round(wins / (wins + losses), 4) if wins + losses else 0.0
 
 
 @dataclass
@@ -136,9 +141,12 @@ def compute_ladder(tournaments: list[dict], lid: str, cfg: EloConfig,
                 continue
             sa, sb = state(a), state(b)
             res_a = _result(m["p1Wins"], m["p2Wins"])
-            score_a = {"W": 1.0, "L": 0.0, "D": 0.5}[res_a]
             before_a, before_b = sa.rating, sb.rating
-            sa.rating, sb.rating = rate_match(cfg, before_a, before_b, score_a, sa.matches, sb.matches, weight)
+            # Draws are not rated: many are intentional (e.g. both players draw into the top 8), so
+            # they say nothing about who is better. K uses rated matches (wins + losses) only.
+            if res_a != "D":
+                sa.rating, sb.rating = rate_match(cfg, before_a, before_b, 1.0 if res_a == "W" else 0.0,
+                                                  sa.wins + sa.losses, sb.wins + sb.losses, weight)
             for me, opp, st, before, won, lost, res in (
                 (a, b, sa, before_a, m["p1Wins"], m["p2Wins"], res_a),
                 (b, a, sb, before_b, m["p2Wins"], m["p1Wins"], _result(m["p2Wins"], m["p1Wins"])),
@@ -178,8 +186,9 @@ def compute_ladder(tournaments: list[dict], lid: str, cfg: EloConfig,
         out[pid] = {
             "rating": _r(st.rating),
             "stats": {
-                "matches": st.matches, "wins": st.wins, "losses": st.losses, "draws": st.draws,
-                "winrate": round(st.wins / st.matches, 4) if st.matches else 0.0,
+                "matches": st.matches, "ratedMatches": st.wins + st.losses,
+                "wins": st.wins, "losses": st.losses, "draws": st.draws,
+                "winrate": winrate(st.wins, st.losses),
                 "games": games, "gameWins": st.game_wins, "gameLosses": st.game_losses,
                 "gameDraws": st.game_draws,
                 "peakRating": _r(st.peak), "peakDate": st.peak_date,
@@ -217,7 +226,9 @@ def compute_all(tournaments: list[dict], cfg: EloConfig = DEFAULT_CONFIG) -> dic
     """
     return {
         **_names(tournaments, {}),
-        "ladders": {lid: compute_ladder(tournaments, lid, cfg) for lid in LADDER_IDS},
+        "ladders": {lid: compute_ladder(tournaments, lid, cfg)
+                    for island in sorted({t.get("island") or "" for t in tournaments} or {""})
+                    for lid in ladder_ids(island)},
     }
 
 

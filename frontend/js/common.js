@@ -1,5 +1,8 @@
 // Shared helpers: config, auth (Cognito Hosted UI with PKCE, or fake local users), API, nav.
 export const CONFIG = window.DELO_CONFIG || { apiBase: "/api", auth: { mode: "local" } };
+// Membership page and its links/upsells (Terraform variable show_membership). Off: memberships
+// granted by an admin still work, they just aren't advertised or sold.
+export const MEMBERSHIP_ENABLED = CONFIG.features?.membership === true;
 
 const TOKEN_KEY = "delo.idToken";
 const DEV_USER_KEY = "delo.devUser";
@@ -7,6 +10,19 @@ const LADDER_KEY = "delo.ladder";
 const FORMAT_KEY = "delo.format";
 
 export const HIDDEN_NAME = "Hidden player";
+
+// ---------------------------------------------------------------- islands
+// The selected island (a separately rated group of players, see backend/delo/elo.py) lives in a
+// cookie so it is preselected on every visit; api() sends it with every request. No cookie or an
+// unknown island: the server uses the default island.
+const ISLAND_COOKIE = "delo_island";
+export function getIsland() {
+  const m = document.cookie.match(/(?:^|;\s*)delo_island=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+export function setIsland(island) {
+  document.cookie = `${ISLAND_COOKIE}=${encodeURIComponent(island)}; path=/; max-age=31536000; SameSite=Lax`;
+}
 // Same ids as GAME_FORMATS in backend/delo/elo.py. "" = all formats (global leaderboard).
 export const GAME_FORMATS = {
   modern: "Modern", limited: "Limited", "duel-commander": "Duel Commander", edh: "EDH",
@@ -27,8 +43,14 @@ export function fmtDelta(d) {
 }
 export function badge(membership) {
   if (membership === "diamond") return '<span class="badge diamond" title="Diamond member">◆ Diamond</span>';
-  if (membership === "supporter") return '<span class="badge supporter" title="Supporter">Supporter</span>';
+  // donors (support.html), marked by an admin: a diamond emoji with a tooltip
+  if (membership === "supporter") return '<span class="supporter-mark" title="Supporter of this project" aria-label="Supporter">💎</span>';
   return "";
+}
+// Supporter perk: a short custom label next to the name (colours: FLAIR_COLORS in backend/delo/premium.py).
+export const FLAIR_COLORS = ["blue", "green", "purple", "orange", "red", "gray"];
+export function flairBadge(flair, color) {
+  return flair ? `<span class="badge flair flair-${FLAIR_COLORS.includes(color) ? color : "gray"}">${esc(flair)}</span>` : "";
 }
 export function typeBadge(type) {
   return `<span class="badge type-${esc(type)}">${type === "rel" ? "REL" : "Casual"}</span>`;
@@ -138,7 +160,9 @@ export function currentUser() {
   if (CONFIG.auth.mode === "local") {
     const dev = localStorage.getItem(DEV_USER_KEY);
     if (!dev) return null;
-    return dev === "admin" ? { email: "admin@localhost", isAdmin: true } : { email: dev.slice(5), isAdmin: false };
+    if (dev === "admin") return { sub: "dev-admin", email: "admin@localhost", isAdmin: true };
+    // same sub as backend/local_server.py dev_claims
+    return { sub: `dev-${dev.slice(5).replace(/[^a-z0-9]/gi, "-")}`, email: dev.slice(5), isAdmin: false };
   }
   const token = localStorage.getItem(TOKEN_KEY);
   const claims = token && decodeJwt(token);
@@ -146,7 +170,7 @@ export function currentUser() {
     localStorage.removeItem(TOKEN_KEY);
     return null;
   }
-  return { email: claims.email, isAdmin: (claims["cognito:groups"] || []).includes("admin") };
+  return { sub: claims.sub, email: claims.email, isAdmin: (claims["cognito:groups"] || []).includes("admin") };
 }
 
 const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -194,7 +218,23 @@ export function logout() {
 }
 
 // ---------------------------------------------------------------- API
-export async function api(path, { method = "GET", body, query } = {}) {
+// background: for requests that can recalculate every rating, longer than the API may take (30 s).
+// The server runs them as a job; this waits for it and returns (or throws) what the request answered.
+export async function api(path, { method = "GET", body, query, background = false } = {}) {
+  if (background) {
+    const job = await api(path, { method, body, query: { ...(query || {}), async: "1" } });
+    if (!job?.jobId) return job; // answered right away (e.g. a preview)
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const state = await api(`/jobs/${job.jobId}`);
+      if (state.status !== "done") continue;
+      if (state.statusCode < 400) return state.result;
+      const err = new Error(state.result?.error || `Request failed (${state.statusCode})`);
+      err.status = state.statusCode;
+      err.data = state.result;
+      throw err;
+    }
+  }
   const headers = {};
   if (CONFIG.auth.mode === "local") {
     const dev = localStorage.getItem(DEV_USER_KEY);
@@ -204,7 +244,9 @@ export async function api(path, { method = "GET", body, query } = {}) {
     if (token) headers.Authorization = `Bearer ${token}`;
   }
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const qs = query ? `?${new URLSearchParams(query)}` : "";
+  const island = getIsland();
+  const params = { ...(island ? { island } : {}), ...(query || {}) };
+  const qs = Object.keys(params).length ? `?${new URLSearchParams(params)}` : "";
   const resp = await fetch(`${CONFIG.apiBase}${path}${qs}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   let data = null;
   try { data = await resp.json(); } catch { /* empty body */ }
@@ -227,11 +269,12 @@ export function renderNav(active) {
   const links = [
     ["index.html", "Leaderboard"],
     ["tournaments.html", "Tournaments"],
+    ["upload.html", "Upload"],
+    ["account.html", user ? "Account" : "Sign in"],
+    ...(user?.isAdmin ? [["admin.html", "Admin"]] : []),
+    ...(MEMBERSHIP_ENABLED ? [["membership.html", "Membership"]] : []),
     ["docs.html", "Docs"],
-    ["elo.html", "Elo formula"],
   ];
-  if (user?.isAdmin) links.push(["upload.html", "Upload"], ["admin.html", "Admin"]);
-  links.push(["account.html", user ? "Account" : "Sign in"]);
 
   let authBits = "";
   if (CONFIG.auth.mode === "local") {
@@ -246,9 +289,13 @@ export function renderNav(active) {
   const nav = document.createElement("nav");
   nav.className = "topnav";
   nav.innerHTML = `<div class="inner"><a class="brand" href="index.html" title="Delo">D<span>elo</span></a>
-    ${links.map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}</a>`).join("")}
+    <select id="island-select" class="island-select" aria-label="Island" title="Island: players who play each other" hidden></select>
+    ${links.map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}${
+      href === "admin.html" ? '<span class="nav-badge" id="claims-badge" hidden></span>' : ""}</a>`).join("")}
     <span class="spacer"></span>${authBits}</div>`;
   document.body.prepend(nav);
+  islandPicker(nav.querySelector("#island-select"));
+  if (user?.isAdmin) pendingClaimsBadge(nav.querySelector("#claims-badge"));
 
   nav.querySelector("#dev-user")?.addEventListener("change", (e) => {
     if (e.target.value) localStorage.setItem(DEV_USER_KEY, e.target.value);
@@ -259,7 +306,46 @@ export function renderNav(active) {
 
   const footer = document.createElement("footer");
   footer.innerHTML = `Delo · unofficial fan project, not affiliated with Wizards of the Coast ·
-    <a href="privacy.html">Privacy</a> ·
+    <a href="support.html">Support this project</a> · <a href="privacy.html">Privacy</a> ·
     <a href="${esc(CONFIG.githubRepo || "#")}/issues/new/choose" rel="noopener">Report an issue</a>`;
   document.body.append(footer);
+  countVisit(user);
+}
+
+// Island picker in the navigation; hidden while no island exists. Changing it reloads the page,
+// so everything on it is shown for the new island.
+async function islandPicker(select) {
+  try {
+    const islands = await api("/islands");
+    if (!islands.length) return;
+    const current = islands.some((i) => i.islandId === getIsland()) ? getIsland() : islands[0].islandId;
+    select.innerHTML = islands.map((i) => `<option value="${esc(i.islandId)}" ${i.islandId === current ? "selected" : ""}>${esc(i.icon || "🏝")} ${esc(i.name)}</option>`).join("");
+    select.hidden = false;
+    select.addEventListener("change", () => { setIsland(select.value); location.reload(); });
+  } catch { /* the site works without the picker (default island) */ }
+}
+
+// Admins: number of player claims waiting for review, on the Admin link.
+async function pendingClaimsBadge(badge) {
+  try {
+    const pending = (await api("/admin/claims", { query: { status: "pending" } })).length;
+    if (!pending) return;
+    badge.textContent = pending > 99 ? "99+" : pending;
+    badge.title = `${pending} player claim${pending === 1 ? "" : "s"} waiting for review`;
+    badge.hidden = false;
+  } catch { /* no badge */ }
+}
+
+// Anonymous page-view counter for the admin statistics (backend/delo/stats.py): page name and
+// an external referring site only. Not sent for admins or with Do Not Track / Global Privacy Control.
+function countVisit(user) {
+  if (user?.isAdmin || navigator.doNotTrack === "1" || navigator.globalPrivacyControl) return;
+  let referrer = "";
+  try {
+    if (document.referrer && new URL(document.referrer).host !== location.host) referrer = document.referrer;
+  } catch { /* ignore malformed referrers */ }
+  fetch(`${CONFIG.apiBase}/visit`, {
+    method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page: location.pathname, referrer }),
+  }).catch(() => {});
 }

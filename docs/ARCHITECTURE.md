@@ -1,7 +1,7 @@
 # Delo — Architecture
 
 Delo (mtgdelo.com) tracks Elo ratings for Magic: The Gathering players from tournament results
-uploaded by admins. It is designed to run for (close to) **$0/month** on AWS at
+uploaded by signed-in users (admins correct and delete them). It is designed to run for (close to) **$0/month** on AWS at
 community scale.
 
 ## 1. Goals and non-goals
@@ -10,7 +10,7 @@ community scale.
 |-------|---------------------|
 | Leaderboards for two ladders, **REL** and **REL + Casual**, for all formats and per format | Real-time pairing / running tournaments |
 | Player detail page with stats, Elo chart, matchups, tournament history | Deck-level analytics (planned for paid tier) |
-| Admin upload of tournament results in several text formats | Automatic scraping of third-party sites |
+| Upload of tournament results by signed-in users, in several text formats | Automatic scraping of third-party sites |
 | Full, deterministic **recalculation** when the Elo model changes | Multi-region / high availability |
 | Player accounts (email-verified), profile claiming, name hiding | |
 | Docs pages: release notes, Elo formula, link to GitHub issues | |
@@ -106,6 +106,7 @@ s3Key, rawKey, playerCount, matchCount, uploadedAt, uploadedBy.
 | `LADDER#rel`, `LADDER#all`, `LADDER#rel:modern`, … | `ladder`, `rating`, `displayName`, `hidden`, `membership`, stats map, tournament history list, engine `state` |
 | `HIST#rel#000001`, `HIST#rel:modern#000001` … | one record **per match** per ladder: date, tournamentId, round, opponentId, result, score, ratingBefore, ratingAfter, delta |
 | `ERASED` | marker only: this player id was erased (GDPR), anonymize it in new uploads |
+| `ALIAS` | `target`: this player id (a misspelling) was merged into `target`; new uploads use `target` |
 
 GSI `leaderboard`: PK `ladder` (S), SK `rating` (N) → one query returns a sorted leaderboard.
 
@@ -122,7 +123,7 @@ S3 `release-notes/{version}.md`.
 
 See [ELO.md](ELO.md) for the formula. Summary: standard Elo, start 1500, K = 48 for a
 player's first 10 matches and 32 afterward, **match** result (not individual games),
-draw = 0.5, byes ignored. Ratings update in round order. The model is versioned
+draws and byes not rated. Ratings update in round order. The model is versioned
 (`MODEL_VERSION`), and a full recalculation takes seconds for thousands of matches.
 
 Independent ladders are computed on each recalculation:
@@ -132,6 +133,15 @@ Independent ladders are computed on each recalculation:
 * `rel:<format>` and `all:<format>` — the same, limited to one game format (`modern`,
   `limited`, `duel-commander`, `edh`, `legacy`, `vintage`, `premodern`). `rel` and `all`
   remain the global ladders across all formats.
+
+**Islands.** An island is a group of players who play each other but not other groups, usually a
+country. Ratings from islands that never meet can't be compared, so every ladder above exists per
+island, with ids `<island>/<ladder>[:<format>]` (e.g. `czech-island/rel:modern`), rated only from that
+island's tournaments. Tournaments and upcoming tournaments carry an `island`; islands are stored in
+the Players table under partition `_ISLANDS` and listed oldest first, the first being the default.
+The site keeps the selected island in a `delo_island` cookie and sends `?island=` with every API
+call; a missing or unknown island means the default. Data without an island (from before islands)
+uses the plain ladder ids; `backend/migrate_islands.py` moves it into "Czech Island" and recalculates.
 
 ## 5. API (API Gateway HTTP API → single Lambda)
 
@@ -143,7 +153,8 @@ Independent ladders are computed on each recalculation:
 | `GET /api/tournaments` · `GET /api/tournaments/{id}` | public | List / detail + standings and each player's Elo change (`ratingChanges`) |
 | `GET /api/release-notes` · `GET /api/release-notes/{version}` | public | Docs page |
 | `GET /api/elo-model` | public | Current model constants (Elo docs page) |
-| `POST /api/tournaments` (`?dryRun=1` for preview) | admin | Upload results (format required, link optional; `files: [{name, content}]` combines Eventlink exports, e.g. one per round, in round order) → incremental rating update |
+| `POST /api/tournaments?replace={id}` | admin | Corrected results: saves the new tournament, keeps players' decks, deletes the old one, full recalc |
+| `POST /api/tournaments` (`?dryRun=1` for preview) | user (`?replace=` admin) | Upload results (format required, link optional; `files: [{name, content}]` combines Eventlink exports, e.g. one per round, in round order) → incremental rating update |
 | `POST /api/tournaments/{id}` | admin | Change format and/or link (format change → recalc) |
 | `DELETE /api/tournaments/{id}` | admin | Remove tournament → recalc |
 | `POST /api/admin/recalculate` | admin | Full recalculation |
@@ -151,13 +162,36 @@ Independent ladders are computed on each recalculation:
 | `GET /api/admin/claims` · `POST /api/admin/claims/{sub}` | admin | Review profile claims |
 | `POST /api/admin/players/{id}` | admin | Set hidden / membership |
 | `POST /api/admin/players/{id}/erase` | admin | GDPR erasure: anonymize the player everywhere (see `delo/privacy.py`) |
+| `POST /api/admin/players/{id}/merge` (`?dryRun=1` to preview) | admin | Merge a misspelled player into `into`: rewrites their tournaments, moves decks, remembers the alias, full recalc; refused if both played in one tournament or the misspelled one is claimed |
 | `GET /api/me` · `POST /api/me/claim` · `POST /api/me/privacy` | user | Account, claim profile, hide name |
 | `DELETE /api/me` | user | Delete own account and Cognito login |
 | `GET /api/me/decks` · `POST /api/me/decks/{tournamentId}` | user (approved claim) | Own tournaments with decks + suggestions per format (own decks newest first, then others); set or clear a deck |
+| `POST /api/me/profile` | user (approved claim) | Flair + colour (anyone), custom profile URL `slug` (Diamond) |
+| `GET /api/me/notes` · `POST /api/me/notes/{tournamentId}` | user (Diamond to write) | Private match notes |
+| `GET /api/me/archetypes` · `GET /api/me/export` | user (Diamond) | Matchups by deck; own history as CSV |
+| `GET /api/upcoming` · `POST /api/upcoming` · `DELETE /api/upcoming/{id}` · `GET /api/me/upcoming` | public / Diamond or admin / poster or admin / user | Upcoming tournaments |
+| `GET /api/admin/tournaments/{id}` | admin | Who uploaded a tournament (`uploadedBy` is an email, so it is left out of the public tournament data) |
+| `GET /api/me/planned-tournaments` · `GET /api/planned-tournaments?days=` | user / public | Upload form picker: planned tournaments of the last 30 days and the next date of each, oldest first. `?days=N` (the Chrome extension: 14): only the last N days, up to today |
+| `GET /api/players/by-slug/{name}` | public | Resolve a custom profile URL |
+| `GET /api/islands` · `GET /api/admin/islands` · `POST /api/admin/islands` · `POST /api/admin/islands/{id}` | public / admin | Islands for the navigation picker; admin list with tournament counts, create, rename |
+| `POST /api/visit` · `GET /api/admin/stats?days=` | public / admin | Cookie-free page-view counter (`delo/stats.py`); daily visitors, page views, top pages and referrers |
+| `POST /api/stripe/webhook` | Stripe signature | Membership from payments (§7) |
+| `POST /api/eventlink` | public (throttled) | Chrome extension upload (`extension/`): one tournament per Eventlink event, replaced when its results change |
+| `GET /api/jobs/{id}` | public (the id is a 128-bit secret) | Progress of a background request: `queued` · `running` · `done` with `statusCode` + `result` |
 
 API Gateway attaches the Cognito **JWT authorizer** to every non-GET route and to
 `/api/me` and `/api/admin/*`. The Lambda additionally checks the `cognito:groups` claim
 for `admin`.
+
+**Background jobs.** API Gateway ends a request after 30 s, and recalculating every rating
+can take longer. Routes that can recalculate (upload, extension upload, edit/delete tournament,
+recalculate, erase, merge) accept `?async=1`. With it, the request is checked (auth) and saved
+as a job (players-table item `_JOB#<id>`, deleted after a day by TTL), and the API answers
+`202 {jobId}`. The Lambda then invokes itself asynchronously (`{"jobId": …}`, no retries), and
+that invocation answers the saved request with up to 180 s to do it. The site polls
+`GET /api/jobs/{id}` every 2 s (`api(…, {background: true})` in `common.js`). A job runs at
+most once (conditional queued → running). One that hasn't finished well past the Lambda
+timeout is reported as failed. Locally, jobs run in a thread of the dev server.
 
 CloudFront serves the API under the same origin (`/api/*`), so there's **no CORS** and
 one URL for everything.
@@ -178,26 +212,45 @@ Identity verification is deliberately **manual via admin approval** for v1. Anyo
 can type any name into a claim form, so an automated check isn't meaningful without
 an external identity source such as a Wizards account, which has no public API.
 
-## 7. Monetization (proposal, not implemented yet)
+## 7. Monetization
 
 Uploads and viewing stay **free**. Paid tiers are cosmetic or add player-owned
 content, never pay-to-see-your-rating (hiding ratings behind payment would erode trust
 in the leaderboard, which is the whole product).
 
-| Tier | Price | Perks |
-|------|-------|-------|
-| Free | $0 | Rating, stats, chart, claim profile, hide name |
-| **Supporter** | $1/month (or $10/year) | Badge next to name, custom profile flair/colour, early access to features |
-| **Diamond** | $5–10/month | Diamond badge, attach decklists to tournaments (Moxfield/Archidekt link), private match notes, matchup stats by archetype, CSV export of own history, custom profile page URL |
-| Store/TO plan | $10–20/month per store | Branded store leaderboard page, embeddable widget for the store website, automatic upload connectors |
+| Tier | Price | Perks | Status |
+|------|-------|-------|--------|
+| Free | $0 | Rating, stats, chart, claim profile, hide name, record decks, profile flair with a colour | live |
+| **Supporter** | $5 once | Badge next to name, early access to features | live (no early-access features yet) |
+| **Diamond** | $5/month | Diamond badge, private match notes, matchups by opponent's deck, CSV export of own history, custom profile URL (`player.html?u=<name>`), posting upcoming tournaments | live |
+| Store/TO plan | $10/month per store | Branded store leaderboard page, embeddable widget for the store website, automatic upload connectors | not built (needs a store entity and §8) |
 
 Other options: donations (Ko-fi / GitHub Sponsors), sponsored "season" leaderboards
 with a store-funded prize, tasteful affiliate links to card shops on decklists.
 
-Implementation sketch: Stripe Payment Links + a `POST /api/stripe/webhook` Lambda route
-(signature-verified) that sets `membership` on the Account and the linked player
-PROFILE. The `membership` field and badge rendering already exist in v1, and admins can
-set it manually.
+**Payments**: Stripe Payment Links, no Stripe SDK. The membership page opens the link with
+`client_reference_id=<Cognito sub>`. Stripe calls `POST /api/stripe/webhook` (a public API
+Gateway route; the Lambda verifies the `Stripe-Signature` HMAC with `STRIPE_WEBHOOK_SECRET`,
+see `delo/payments.py`):
+
+* `checkout.session.completed`: `mode: payment` → `supporter: true` (lifetime),
+  `mode: subscription` → `diamond: true`; stores `stripeCustomerId`.
+* `customer.subscription.created|updated|deleted`: `diamond` = subscription status is
+  active / trialing / past_due (and not deleted). Cancelling in the customer portal keeps
+  the subscription active until the end of the paid period.
+
+The Account's `membership` is Diamond if `diamond`, else Supporter if `supporter`; it is copied
+to the claimed player PROFILE (badge). Perks check the higher of the paid membership and one
+an admin set on the profile; admins have every perk (`App._level`, `delo/premium.py`).
+Notes stay readable after a membership ends; new paid content can't be added.
+
+**Upcoming tournaments** live in the Players table under partition `_UPCOMING` (single-table).
+One-off events carry a DynamoDB TTL attribute `expiresAt` and disappear 30 days after the event
+(the public list shows only future dates; the upload form offers the last 30 days). Events can
+**recur** weekly (same weekday) or monthly (same day of the month, last day in shorter months):
+they have no TTL, and the list shows only their next date, with a "might be cancelled" note when
+that day is a Czech public holiday (`delo/schedule.py`, Easter computed). Diamond members can list
+up to 10 at a time; the poster or an admin can remove one.
 
 ## 8. Connectors (future)
 

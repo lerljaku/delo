@@ -1,4 +1,8 @@
-import { api, badge, CONFIG, currentUser, esc, GAME_FORMATS, login, logout, playerLink, renderNav, showError } from "./common.js";
+import {
+  api, badge, CONFIG, currentUser, esc, FLAIR_COLORS, GAME_FORMATS, login, logout, MEMBERSHIP_ENABLED, playerLink, renderNav,
+  showError,
+} from "./common.js";
+import { bindDeckInputs, deckDatalists, deckInput } from "./decks.js";
 
 renderNav("account.html");
 const content = document.getElementById("content");
@@ -10,7 +14,6 @@ const STATUS = {
   rejected: "Your last claim was rejected. Contact an admin if this is a mistake.",
 };
 
-// One suggestion list per format; the server orders it (own decks, newest first, then others).
 async function renderDecks() {
   const box = document.getElementById("decks-box");
   const data = await api("/me/decks");
@@ -18,35 +21,35 @@ async function renderDecks() {
     box.innerHTML = '<p class="muted">No tournaments yet.</p>';
     return;
   }
-  const listId = (format) => `decks-${format || "none"}`;
-  const formats = new Set(data.tournaments.map((t) => t.format || ""));
-  box.innerHTML = `${[...formats].map((f) => `<datalist id="${listId(f)}">${(data.suggestions[f] || [])
-    .map((d) => `<option value="${esc(d)}"></option>`).join("")}</datalist>`).join("")}
+  box.innerHTML = `${deckDatalists(data)}
     <div class="table-wrap"><table><thead><tr><th>Date</th><th>Tournament</th><th>Format</th><th>Deck</th></tr></thead><tbody>
     ${data.tournaments.map((t) => `<tr><td>${esc(t.date)}</td>
       <td><a href="tournaments.html?id=${encodeURIComponent(t.tournamentId)}">${esc(t.name)}</a></td>
       <td>${t.format ? esc(GAME_FORMATS[t.format] || t.format) : '<span class="muted">—</span>'}</td>
-      <td><input type="text" class="deck-input" list="${listId(t.format)}" maxlength="60" value="${esc(t.deck || "")}"
-        data-tid="${esc(t.tournamentId)}" placeholder="Choose or type a deck" aria-label="Deck for ${esc(t.name)}">
-        <span class="deck-status muted" aria-live="polite"></span></td></tr>`).join("")}
+      <td>${deckInput(t, t.deck)}</td></tr>`).join("")}
     </tbody></table></div>`;
+  bindDeckInputs(box);
+}
 
-  box.querySelectorAll("input.deck-input").forEach((input) => input.addEventListener("change", async () => {
-    const status = input.nextElementSibling;
-    status.textContent = "Saving…";
-    try {
-      const r = await api(`/me/decks/${encodeURIComponent(input.dataset.tid)}`, { method: "POST", body: { deck: input.value } });
-      input.value = r.deck || "";
-      status.textContent = "Saved";
-      // re-read suggestions so the new deck moves to the top of its format's list
-      const fresh = await api("/me/decks");
-      for (const f of formats) {
-        box.querySelector(`#${listId(f)}`).innerHTML = (fresh.suggestions[f] || []).map((d) => `<option value="${esc(d)}"></option>`).join("");
-      }
-    } catch (err) {
-      status.textContent = err.message;
-    }
-  }));
+// Flair for everyone with a claimed profile; the custom profile URL is a Diamond perk (shown
+// disabled to others only while the membership page is on).
+function profileSection(me) {
+  const p = me.player || {};
+  const diamond = me.effectiveMembership === "diamond";
+  const url = `${location.origin}/player.html?u=`;
+  return `<h2>Profile</h2>
+    <form id="profile-form" class="card">
+      <p class="secondary">A short flair is shown next to your name on the leaderboard and your player page.</p>
+      <div class="form-grid">
+      <label class="field">Flair<input type="text" name="flair" maxlength="30" value="${esc(p.flair || "")}" placeholder="e.g. Kroxa enjoyer"></label>
+      <label class="field">Flair colour<select name="flairColor">
+        ${FLAIR_COLORS.map((c) => `<option value="${c}" ${c === (p.flairColor || "gray") ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      ${diamond || MEMBERSHIP_ENABLED ? `<label class="field">Profile URL ${diamond ? "" : '<span class="muted">(Diamond)</span>'}
+        <input type="text" name="slug" maxlength="30" value="${esc(p.slug || "")}" placeholder="your-name" ${diamond ? "" : "disabled"}
+          title="${esc(url)}your-name"></label>` : ""}
+    </div>
+    ${p.slug ? `<p class="secondary">Your profile: <a href="player.html?u=${encodeURIComponent(p.slug)}">${esc(url + p.slug)}</a></p>` : ""}
+    <button class="primary">Save profile</button><div id="profile-msg"></div></form>`;
 }
 
 async function render() {
@@ -76,15 +79,18 @@ async function render() {
       <p><strong>${esc(me.email)}</strong>${me.isAdmin ? ' <span class="badge type-rel">ADMIN</span>' : ""}${badge(me.membership)}</p>
       <p>${STATUS[me.claimStatus] || ""} ${player ? `Player: ${playerLink(player.playerId, player.displayName, "all")}` : ""}</p>
     </div>
+    ${claimSection}
+    ${MEMBERSHIP_ENABLED ? `<h2>Membership</h2>
+    <p>${me.effectiveMembership ? `You are a ${badge(me.effectiveMembership)} member.` : "Free."}
+      <a href="membership.html">${me.effectiveMembership === "diamond" ? "Membership details" : "See what Supporter and Diamond add"}</a></p>`
+    : me.effectiveMembership ? `<h2>Membership</h2><p>You are a ${badge(me.effectiveMembership)} member.</p>` : ""}
+    ${me.claimStatus === "approved" ? profileSection(me) : ""}
     ${me.claimStatus === "approved" ? `<h2>Privacy</h2>
       <div class="card"><label class="row"><input type="checkbox" id="hidden" ${player?.hidden ? "checked" : ""}>
         Hide my name. It will show as “Hidden player” everywhere. Your rating is still counted.</label><div id="privacy-msg"></div></div>` : ""}
     ${me.claimStatus === "approved" ? `<h2 id="decks">My decks</h2>
       <p class="secondary">Pick or type the deck you played in each tournament. Your most recent decks come first.</p>
       <div id="decks-box"><p class="muted">Loading…</p></div>` : ""}
-    ${claimSection}
-    <h2>Membership</h2>
-    <p class="secondary">Supporter and Diamond memberships are coming soon. Viewing and uploads will always stay free.</p>
     <h2>Delete account</h2>
     <div class="card">
       <p class="secondary">Deletes your email and login. Your player profile and results stay on the site, no longer linked to you.
@@ -92,6 +98,16 @@ async function render() {
       <button class="secondary" id="delete-account">Delete my account</button><div id="delete-msg"></div></div>`;
 
   if (me.claimStatus === "approved") renderDecks().catch((err) => showError(document.getElementById("decks-box"), err));
+
+  document.getElementById("profile-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById("profile-msg");
+    const body = Object.fromEntries(new FormData(e.target));
+    try {
+      await api("/me/profile", { method: "POST", body });
+      msg.innerHTML = '<div class="msg ok">Saved.</div>';
+    } catch (err) { showError(msg, err); }
+  });
 
   document.getElementById("delete-account").addEventListener("click", async () => {
     if (!confirm("Delete your account? This cannot be undone.")) return;

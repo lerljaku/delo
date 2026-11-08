@@ -1,10 +1,11 @@
 """Import Eventlink pastes (raw-data-eventlink/*.txt) into Delo storage and recalculate Elo once.
 
-    py backend/import_events.py --target aws [--function delo-prod-api] [--profile NAME]
+    py backend/import_events.py --target aws [--function mtgdelo-prod-api] [--profile NAME]
     py backend/import_events.py --target local [--data .localdata]
 
 Options: --source DIR (default raw-data-eventlink/), --dry-run (parse and list only),
---replace (delete every stored tournament first, e.g. after fixing dates in events.json).
+--replace (delete every stored tournament first, e.g. after fixing dates in events.json),
+--island ID (island to import into; default: the default island, see migrate_islands.py).
 
 Event names, dates, types (rel/casual) and optional links come from events.json in the source
 folder. The first run writes it with guesses from the file names; fix the entries marked "todo" and
@@ -87,7 +88,12 @@ def load_manifest(source: Path, events: list[tuple[str, str]]) -> dict:
 
 
 def import_events(storage, source: Path, uploaded_by: str = "import", dry_run: bool = False,
-                  replace: bool = False) -> None:
+                  replace: bool = False, island: str | None = None) -> None:
+    """island: id of the island to import into; default the default (oldest) island, if any."""
+    islands = [i["islandId"] for i in storage.list_islands()]
+    if island and island not in islands:
+        sys.exit(f"unknown island '{island}', existing: {', '.join(islands) or 'none'}")
+    island = island or (islands[0] if islands else None)
     events = read_events(source)
     manifest = load_manifest(source, events)
     if replace and not dry_run:
@@ -124,6 +130,7 @@ def import_events(storage, source: Path, uploaded_by: str = "import", dry_run: b
         print(f"{key}: {t['date']} {t['type']} {t['format'] or '(no format)'} '{t['name']}', "
               f"{len(t['players'])} players, {len(t['matches'])} matches{todo}")
         if not dry_run:
+            t["island"] = island
             storage.save_tournament(t, content, "txt")
             existing[t["id"]] = t["format"]
         imported += 1
@@ -155,11 +162,12 @@ def main() -> None:
     parser.add_argument("--target", choices=("aws", "local"), required=True)
     parser.add_argument("--source", default=str(RAW_DATA), help="folder of Eventlink .txt pastes")
     parser.add_argument("--data", default=str(ROOT / ".localdata"), help="local storage folder (--target local)")
-    parser.add_argument("--function", default="delo-prod-api", help="deployed Lambda name (--target aws)")
+    parser.add_argument("--function", default="mtgdelo-prod-api", help="deployed Lambda name (--target aws)")
     parser.add_argument("--profile", help="AWS profile (--target aws)")
     parser.add_argument("--region", help="AWS region (--target aws)")
     parser.add_argument("--dry-run", action="store_true", help="parse and list, store nothing")
     parser.add_argument("--replace", action="store_true", help="delete all stored tournaments before importing")
+    parser.add_argument("--island", help="island id to import into (default: the default island)")
     args = parser.parse_args()
 
     source = Path(args.source).resolve()
@@ -171,7 +179,7 @@ def main() -> None:
         from delo.storage import LocalStorage
 
         storage = LocalStorage(args.data)
-    import_events(storage, source, dry_run=args.dry_run, replace=args.replace)
+    import_events(storage, source, dry_run=args.dry_run, replace=args.replace, island=args.island)
 
 
 if __name__ == "__main__":

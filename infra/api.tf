@@ -58,6 +58,11 @@ resource "aws_iam_role_policy" "api" {
         Action   = ["cognito-idp:AdminDeleteUser"] # users deleting their own account
         Resource = aws_cognito_user_pool.users.arn
       },
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"] # background jobs run in their own invocation (App.run_job)
+        Resource = aws_lambda_function.api.arn
+      },
     ]
   })
 }
@@ -76,21 +81,32 @@ resource "aws_lambda_function" "api" {
   filename         = data.archive_file.api.output_path
   source_code_hash = data.archive_file.api.output_base64sha256
   memory_size      = 512
-  timeout          = 60
+  # API requests are cut off by API Gateway after 30 s anyway; this is for background jobs
+  # (?async=1, e.g. recalculating every rating), which run in their own invocation
+  timeout = 180
 
   environment {
     variables = {
-      STORAGE             = "aws"
-      DATA_BUCKET         = aws_s3_bucket.data.id
-      TOURNAMENTS_TABLE   = aws_dynamodb_table.tournaments.name
-      PLAYERS_TABLE       = aws_dynamodb_table.players.name
-      ACCOUNTS_TABLE      = aws_dynamodb_table.accounts.name
-      RELEASE_NOTES_TABLE = aws_dynamodb_table.release_notes.name
-      USER_POOL_ID        = aws_cognito_user_pool.users.id
+      STORAGE               = "aws"
+      DATA_BUCKET           = aws_s3_bucket.data.id
+      TOURNAMENTS_TABLE     = aws_dynamodb_table.tournaments.name
+      PLAYERS_TABLE         = aws_dynamodb_table.players.name
+      ACCOUNTS_TABLE        = aws_dynamodb_table.accounts.name
+      RELEASE_NOTES_TABLE   = aws_dynamodb_table.release_notes.name
+      USER_POOL_ID          = aws_cognito_user_pool.users.id
+      STRIPE_WEBHOOK_SECRET = var.stripe_webhook_secret
+      STATS_SECRET          = random_id.stats_secret.hex
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.api, aws_iam_role_policy_attachment.api_logs]
+}
+
+# A failed background job is reported to the user, who decides whether to try again: a retry
+# could repeat half-done work (the job runs once anyway, see AwsStorage.start_job).
+resource "aws_lambda_function_event_invoke_config" "api" {
+  function_name          = aws_lambda_function.api.function_name
+  maximum_retry_attempts = 0
 }
 
 # ---------------------------------------------------------------------------
@@ -122,9 +138,13 @@ resource "aws_apigatewayv2_authorizer" "cognito" {
 locals {
   # Public reads; everything else requires a valid Cognito ID token.
   # The Lambda additionally checks the "admin" group for admin routes.
-  public_routes = ["GET /api/{proxy+}"]
+  # Stripe can't send a JWT: the webhook is public and verified by its signature in the Lambda.
+  # /api/visit: anonymous page-view counter (delo/stats.py), sent by every page.
+  # /api/eventlink: anonymous uploads from the Chrome extension (extension/), throttled below.
+  public_routes = ["GET /api/{proxy+}", "POST /api/stripe/webhook", "POST /api/visit", "POST /api/eventlink"]
   private_routes = [
     "GET /api/me",
+    "GET /api/me/{proxy+}",
     "GET /api/admin/{proxy+}",
     "POST /api/{proxy+}",
     "DELETE /api/{proxy+}",
@@ -156,6 +176,15 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_rate_limit  = var.api_throttle_rate
     throttling_burst_limit = var.api_throttle_burst
   }
+
+  # anyone can upload results here: keep a flood slow (a real event is one upload)
+  route_settings {
+    route_key              = "POST /api/eventlink"
+    throttling_rate_limit  = var.eventlink_throttle_rate
+    throttling_burst_limit = var.eventlink_throttle_burst
+  }
+
+  depends_on = [aws_apigatewayv2_route.public]
 }
 
 resource "aws_lambda_permission" "apigw" {

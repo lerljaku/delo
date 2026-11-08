@@ -28,16 +28,22 @@ resource "aws_acm_certificate" "site" {
   }
 }
 
+# Keyed by domain name (known at plan time); the record values come from the certificate.
 resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for o in flatten([for c in aws_acm_certificate.site : c.domain_validation_options]) : o.domain_name => o
-  }
-  zone_id         = data.aws_route53_zone.site[0].zone_id
-  name            = each.value.resource_record_name
-  type            = each.value.resource_record_type
-  records         = [each.value.resource_record_value]
-  ttl             = 300
+  for_each = toset(local.site_aliases)
+  zone_id  = data.aws_route53_zone.site[0].zone_id
+  name     = local.cert_validation[each.value].resource_record_name
+  type     = local.cert_validation[each.value].resource_record_type
+  records  = [local.cert_validation[each.value].resource_record_value]
+  ttl      = 300
+  # apex and www can share one validation record; the second write just overwrites it
   allow_overwrite = true
+}
+
+locals {
+  cert_validation = local.custom_domain ? {
+    for o in aws_acm_certificate.site[0].domain_validation_options : o.domain_name => o
+  } : {}
 }
 
 resource "aws_acm_certificate_validation" "site" {

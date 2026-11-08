@@ -2,7 +2,12 @@
 # Cognito: email sign-up with verification, Hosted UI, "admin" group.
 # ---------------------------------------------------------------------------
 resource "aws_cognito_user_pool" "users" {
-  name                     = "${local.name}-users"
+  name = "${local.name}-users"
+
+  # holds the user accounts: never destroyed by an apply (e.g. a changed `project` would replace it with an empty one)
+  lifecycle {
+    prevent_destroy = true
+  }
   username_attributes      = ["email"]
   auto_verified_attributes = ["email"]
 
@@ -77,4 +82,12 @@ resource "aws_cognito_user_in_group" "admin" {
   user_pool_id = aws_cognito_user_pool.users.id
   group_name   = aws_cognito_user_group.admin.name
   username     = aws_cognito_user.admin[each.key].sub
+}
+
+# Sign-in page in Delo's colours and with its logo. Cognito's hosted page only accepts its own
+# "-customizable" CSS classes (infra/login/login.css); the logo must be PNG/JPEG under 100 KB.
+resource "aws_cognito_user_pool_ui_customization" "web" {
+  user_pool_id = aws_cognito_user_pool_domain.users.user_pool_id # the page exists once the domain does
+  css          = file("${path.module}/login/login.css")
+  image_file   = filebase64("${path.module}/login/logo.png")
 }

@@ -1,4 +1,4 @@
-import { api, currentUser, esc, externalLink, GAME_FORMATS, renderNav, showError } from "./common.js";
+import { api, CONFIG, currentUser, esc, externalLink, GAME_FORMATS, getIsland, login, param, renderNav, showError } from "./common.js";
 
 renderNav("upload.html");
 const content = document.getElementById("content");
@@ -43,11 +43,19 @@ Round 2
 Alice Novak vs Dave Dvorak 1-1-1`,
 };
 
-if (!currentUser()?.isAdmin) {
-  content.innerHTML = '<div class="msg error">Only admins can upload results. <a href="account.html">Sign in</a> with an admin account.</div>';
+if (!currentUser()) {
+  // visible to everyone, so people find where results come from; uploading needs an account
+  content.innerHTML = `<div class="msg">You need to sign in to upload tournament results.</div>
+    ${CONFIG.auth.mode === "local" ? '<p class="muted">Local development: choose a dev user in the top-right menu.</p>'
+      : '<button class="primary" id="signin">Sign in</button>'}`;
+  document.getElementById("signin")?.addEventListener("click", login);
+} else if (param("replace") && !currentUser().isAdmin) {
+  content.innerHTML = '<div class="msg">Only admins can replace the results of an uploaded tournament.</div>';
 } else {
   content.innerHTML = `
     <form id="form" class="card">
+      <label class="field" id="planned-field" hidden>Planned tournament <span class="muted small">(fills in the details below)</span>
+        <select id="planned"><option value="">Not in the list</option></select></label>
       <div class="form-grid">
         <label class="field">Tournament name<input type="text" name="name" required placeholder="FNM Modern"></label>
         <label class="field">Date<input type="date" name="date" required></label>
@@ -73,10 +81,48 @@ if (!currentUser()?.isAdmin) {
 
   const form = document.getElementById("form");
   const result = document.getElementById("result");
+  // upload.html?replace=<tournamentId>: corrected results for an uploaded tournament
+  const replaceId = param("replace");
+  if (!replaceId) {
+    api("/islands").then((islands) => {
+      const island = islands.find((i) => i.islandId === getIsland()) || islands[0];
+      if (island) form.insertAdjacentHTML("afterbegin", `<p class="secondary">Uploading to <strong>🏝 ${esc(island.name)}</strong>.
+        To upload to another island, select it in the navigation first.</p>`);
+    }).catch(() => {});
+  }
+  const query = (extra = {}) => ({ ...extra, ...(replaceId ? { replace: replaceId } : {}) });
   const fileInput = document.getElementById("file");
   const filesBox = document.getElementById("files");
   let files = null; // several picked files: [{name, content}], combined by the server in round order
   form.date.valueAsDate = new Date();
+  // Planned tournaments (the "Upcoming tournaments" list, incl. the last 30 days), oldest first.
+  const plannedSelect = document.getElementById("planned");
+  if (!replaceId) {
+    api("/me/planned-tournaments").then((events) => {
+      if (!events.length) return;
+      const day = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+      plannedSelect.innerHTML += events.map((e, i) => `<option value="${i}">${esc(day(e.date))} · ${esc(e.name)}${e.repeats ? " ↻" : ""}${e.location ? ` (${esc(e.location)})` : ""}</option>`).join("");
+      document.getElementById("planned-field").hidden = false;
+      plannedSelect.addEventListener("change", () => {
+        const e = events[plannedSelect.value];
+        if (!e) return;
+        form.name.value = e.name;
+        form.date.value = e.date;
+        if (e.format) form.format.value = e.format;
+        if (e.type) form.type.value = e.type;
+        form.link.value = e.link || "";
+      });
+    }).catch(() => {}); // the form works without it
+  }
+  if (replaceId) {
+    api(`/tournaments/${encodeURIComponent(replaceId)}`).then((t) => {
+      for (const field of ["name", "date", "type", "format", "link"]) if (t[field]) form[field].value = t[field];
+      form.insertAdjacentHTML("beforebegin", `<div class="msg">Uploading corrected results for
+        <a href="tournaments.html?id=${encodeURIComponent(t.id)}">${esc(t.name)}</a> (${esc(t.date)}). On upload, the old results are
+        deleted, players' decks are kept and every rating is recalculated.</div>`);
+      form.querySelector("button[type=submit]").textContent = "Replace results and recalculate";
+    }).catch((err) => showError(result, err));
+  }
   const setPlaceholder = () => { form.content.placeholder = EXAMPLES[form.sourceFormat.value] || EXAMPLES.auto; };
   form.sourceFormat.addEventListener("change", setPlaceholder);
   setPlaceholder();
@@ -109,12 +155,14 @@ if (!currentUser()?.isAdmin) {
 
   document.getElementById("preview").addEventListener("click", async () => {
     try {
-      const r = await api("/tournaments", { method: "POST", body: payload(), query: { dryRun: "1" } });
+      const r = await api("/tournaments", { method: "POST", body: payload(), query: query({ dryRun: "1" }) });
       const t = r.tournament;
       const name = (id) => esc(t.players[id]);
       result.innerHTML = `
         ${r.duplicate ? '<div class="msg error">This exact tournament has already been uploaded.</div>' : ""}
+        ${r.unchanged ? '<div class="msg error">These are the same results as the tournament you are replacing.</div>' : ""}
         ${sameLinkWarning(r.sameLink)}
+        ${r.mergedNames?.length ? `<div class="msg">Known misspellings, counted for the right player: ${r.mergedNames.map(esc).join(", ")}</div>` : ""}
         ${r.erasedPlayers ? `<div class="msg">${r.erasedPlayers} player(s) asked to have their data erased and will appear as “Deleted player”.</div>` : ""}
         <div class="msg ok">Parsed ${esc(t.sourceFormat.toUpperCase())}: ${Object.keys(t.players).length} players,
           ${t.matches.filter((m) => m.p2).length} matches, ${new Set(t.matches.map((m) => m.round)).size} rounds.</div>
@@ -133,8 +181,13 @@ if (!currentUser()?.isAdmin) {
     e.preventDefault();
     const button = form.querySelector("button[type=submit]");
     button.disabled = true;
+    result.innerHTML = '<div class="msg">Uploading and recalculating ratings…</div>';
     try {
-      const r = await api("/tournaments", { method: "POST", body: payload() });
+      const r = await api("/tournaments", { method: "POST", body: payload(), query: query(), background: true });
+      if (r.replaced) { // the tournament this page was replacing is gone: show the corrected one
+        location.href = `tournaments.html?id=${encodeURIComponent(r.tournamentId)}`;
+        return;
+      }
       const rc = r.recalculation;
       const how = rc.mode === "incremental"
         ? `Updated the ratings of ${rc.players} players.`

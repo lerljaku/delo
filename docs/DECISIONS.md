@@ -24,14 +24,14 @@ name from the brief) and ManaRank were already taken. Other alternatives conside
 | # | Question | Default chosen |
 |---|----------|----------------|
 | 1 | Rate matches or individual games? | **Matches** (Bo3 result). Game W/L is still tracked for stats. |
-| 2 | Starting rating, K-factor | 1500; K 48 for first 10 matches, then 32 |
-| 3 | Do byes count? | Not rated, not in W/L stats; they count for tournament points/standings |
+| 2 | Starting rating, K-factor, scale | 1500; K 48 for first 10 matches, then 32; scale 1135.77 so 200 points = 60% win expectancy (MTG Elo Project normalisation; model v2.0, was 400) |
+| 3 | Do byes and draws count? | Byes: not rated, not in W/L stats; they count for tournament points/standings. Draws: not rated (no rating change, often intentional, e.g. into the top 8), but shown in W-L-D; they don't count as rated matches for the provisional K or the 10-match minimum. |
 | 4 | Casual weight in REL + Casual ladder | 1.0 (same as REL). Could be 0.5. |
 | 5 | Player identity across tournaments | Name match ignoring case, accents (Jiri = Jiří), emoji decorations and extra spaces. The most common spelling is displayed. Different spellings such as nicknames still create separate players. (Future: alias merge tool.) |
 | 6 | "Best/worst matchup" definition | Opponent with the highest/lowest match score `(W + 0.5·D)/N`; at least 2 matches if any opponent qualifies |
-| 7 | Win rate | `wins / (wins + losses + draws)` |
+| 7 | Win rate | `wins / (wins + losses)`: draws are left out (they were counted as non-wins before) |
 | 8 | Name hiding verification | Manual: email-verified account → claim profile → admin approves → owner can hide. Admins can hide on request. |
-| 9 | Monetization | Not implemented. Badge field exists; tiers proposed in ARCHITECTURE.md §7 |
+| 9 | Monetization | Supporter ($5 once) and Diamond ($5/month) via Stripe Payment Links, perks live (ARCHITECTURE.md §7). Store/TO plan not built yet. |
 | 10 | Hosting | S3 + CloudFront + HTTP API + Lambda (Python) + DynamoDB + Cognito, Terraform |
 | 11 | Tournament source data | S3 (normalized JSON + raw upload), not GitHub |
 | 12 | AWS region | `eu-central-1` (variable) |
@@ -54,11 +54,18 @@ name from the brief) and ManaRank were already taken. Other alternatives conside
    and `import_events.py --replace`).
 5. **Commander / multiplayer pods**: Elo is 1v1. Multiplayer needs a different model
    (e.g. pairwise decomposition or TrueSkill). In scope?
-6. **Minimum matches to appear on the leaderboard**: 1 rated match per ladder
-   (`EloConfig.min_matches`; 10 was tried and reverted). Players below that are listed as
-   "provisional" without rank or Elo. Ratings count from the first match either way.
-7. **Who are the admins**: store owners/TOs? Should an admin only be able to upload
-   for their own store (multi-tenant)?
+6. **Minimum matches to appear on the leaderboard**: 10 rated matches per ladder
+   (`EloConfig.min_matches`). Players below that are listed as "provisional" without rank or
+   Elo. Ratings count from the first match either way.
+7. **Who uploads**: any signed-in user can upload results; only admins can correct, move or
+   delete a tournament, and they see who uploaded it. Open: limit uploads per user per day, or
+   per store (multi-tenant), if fake uploads become a problem.
+   The Chrome extension (`extension/`) uploads **without signing in** (`POST /api/eventlink`),
+   rated immediately. Anyone can call that endpoint, so fake results are possible until an admin
+   deletes them (they show as uploaded by "Eventlink extension (anonymous)"). Limits: Eventlink
+   pairings only, one tournament per Eventlink event (uploading again replaces it when the
+   results changed, otherwise does nothing), and API Gateway throttling of the route
+   (`eventlink_throttle_rate`/`_burst`). Switch to admin approval if abuse shows up.
 8. **Payments**: Stripe OK? Monthly or yearly? Company/tax setup matters for selling in the EU.
 9. **GitHub repo URL** for the "file a ticket" link (set in `frontend/config.js` /
    Terraform variable `github_repo`).

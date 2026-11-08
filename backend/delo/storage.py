@@ -7,14 +7,24 @@ import copy
 import json
 import os
 import threading
+import time
 from decimal import Decimal
 from pathlib import Path
 
-from .elo import LADDER_IDS
 
-PROFILE_FIELDS = ("displayName", "hidden", "membership", "ownerSub")
-SUMMARY_FIELDS = ("matches", "wins", "losses", "draws", "winrate", "peakRating")
-TOURNAMENT_FIELDS = ("format", "link")  # editable after upload
+PROFILE_FIELDS = ("displayName", "hidden", "membership", "ownerSub", "flair", "flairColor", "slug")
+SUMMARY_FIELDS = ("matches", "ratedMatches", "wins", "losses", "draws", "winrate", "peakRating")
+TOURNAMENT_FIELDS = ("format", "link", "island")  # editable after upload
+# Per-player values set after the upload, kept on the tournament table item: {playerId: value}
+PLAYER_VALUES = ("decks",)
+UPCOMING_PK = "_UPCOMING"  # players-table partition holding upcoming events (single-table)
+UPCOMING_KEEP_DAYS = 30  # one-off events stay this long after their date, for the upload form
+# Visitor statistics (delo/stats.py): daily totals under STATS_PK; the anonymous per-day visitor
+# codes under VISITOR_PK are deleted after VISITOR_KEEP_DAYS (DynamoDB TTL).
+STATS_PK, VISITOR_PK, VISITOR_KEEP_DAYS = "_STATS", "_VISITOR", 2
+ISLANDS_PK = "_ISLANDS"  # islands (groups of players rated separately, see delo/elo.py)
+# Background requests (App.run_job): players-table item "_JOB#<id>", deleted a day later (DynamoDB TTL)
+JOB_PK, JOB_KEEP_SECONDS = "_JOB#", 86400
 
 
 def _ladder_item(pid: str, ladder: str, entry: dict, name: str, profile: dict) -> dict:
@@ -52,7 +62,9 @@ class LocalStorage:
             self._db = {"tournaments": {}, "profiles": {}, "ladders": {}, "history": {},
                         "accounts": {}, "releaseNotes": {}}
             self._save()
-        self._db.setdefault("erased", [])
+        for section, empty in (("erased", []), ("notes", {}), ("slugs", {}), ("upcoming", {}), ("stats", {}), ("visitors", {}),
+                               ("islands", {}), ("aliases", {}), ("eventlink", {}), ("jobs", {})):
+            self._db.setdefault(section, empty)
 
     def _save(self) -> None:
         tmp = self._db_path.with_suffix(".tmp")
@@ -64,9 +76,9 @@ class LocalStorage:
         with self._lock:
             (self.root / "raw" / f"{t['id']}.{raw_ext}").write_text(raw_content, "utf-8")
             (self.root / "tournaments" / f"{t['id']}.json").write_text(json.dumps(t), "utf-8")
-            decks = self._db["tournaments"].get(t["id"], {}).get("decks")
+            old = self._db["tournaments"].get(t["id"])
             self._db["tournaments"][t["id"]] = tournament_meta(t, f"tournaments/{t['id']}.json",
-                                                               f"raw/{t['id']}.{raw_ext}", decks)
+                                                               f"raw/{t['id']}.{raw_ext}", old)
             self._save()
 
     def delete_tournament(self, tid: str) -> bool:
@@ -96,26 +108,165 @@ class LocalStorage:
             t.update({k: v for k, v in fields.items() if k in TOURNAMENT_FIELDS})
             meta = self._db["tournaments"][tid]
             (self.root / meta["s3Key"]).write_text(json.dumps(t), "utf-8")
-            self._db["tournaments"][tid] = tournament_meta(t, meta["s3Key"], meta["rawKey"], meta.get("decks"))
+            self._db["tournaments"][tid] = tournament_meta(t, meta["s3Key"], meta["rawKey"], meta)
             self._save()
             return t
 
     def load_all_tournaments(self) -> list[dict]:
         return [self.get_tournament(tid) for tid in list(self._db["tournaments"])]
 
-    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
-        """Set (or with None remove) the deck a player played in a tournament."""
+    def set_player_value(self, tid: str, field: str, pid: str, value: str | None) -> bool:
+        """Set (or with None remove) a PLAYER_VALUES entry, e.g. the deck a player played."""
         with self._lock:
             meta = self._db["tournaments"].get(tid)
             if not meta:
                 return False
-            decks = meta.setdefault("decks", {})
-            if deck:
-                decks[pid] = deck
+            values = meta.setdefault(field, {})
+            if value:
+                values[pid] = value
             else:
-                decks.pop(pid, None)
+                values.pop(pid, None)
             self._save()
             return True
+
+    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
+        return self.set_player_value(tid, "decks", pid, deck)
+
+    # --- private match notes (Diamond) -------------------------------------
+    def get_notes(self, pid: str) -> dict[str, dict[str, str]]:
+        """{tournamentId: {round: note}}"""
+        return copy.deepcopy(self._db["notes"].get(pid, {}))
+
+    def set_note(self, pid: str, tid: str, rnd: int, note: str | None) -> None:
+        with self._lock:
+            notes = self._db["notes"].setdefault(pid, {}).setdefault(tid, {})
+            if note:
+                notes[str(rnd)] = note
+            else:
+                notes.pop(str(rnd), None)
+            self._save()
+
+    # --- custom profile URLs (Diamond) -------------------------------------
+    def claim_slug(self, slug: str, pid: str) -> bool:
+        """Reserve a profile URL name; False if another player has it."""
+        with self._lock:
+            if self._db["slugs"].get(slug, pid) != pid:
+                return False
+            self._db["slugs"][slug] = pid
+            self._save()
+            return True
+
+    def release_slug(self, slug: str, pid: str) -> None:
+        with self._lock:
+            if self._db["slugs"].get(slug) == pid:
+                del self._db["slugs"][slug]
+                self._save()
+
+    def resolve_slug(self, slug: str) -> str | None:
+        return self._db["slugs"].get(slug)
+
+    # --- Eventlink events uploaded by the extension ----------------------------
+    def get_eventlink(self, event_id: str) -> str | None:
+        return self._db["eventlink"].get(event_id)
+
+    def claim_eventlink(self, event_id: str, tid: str, expected: str | None) -> bool:
+        """Point an Eventlink event at tournament `tid`, only if it still points at `expected`."""
+        with self._lock:
+            if self._db["eventlink"].get(event_id) != expected:
+                return False
+            self._db["eventlink"][event_id] = tid
+            self._save()
+            return True
+
+    # --- background jobs (App.run_job) ---------------------------------------------
+    def put_job(self, job_id: str, job: dict) -> None:
+        """A new job: {status: "queued", request, createdAt}. Jobs older than a day are dropped."""
+        with self._lock:
+            now = time.time()
+            self._db["jobs"] = {k: j for k, j in self._db["jobs"].items() if j["expiresAt"] > now}
+            self._db["jobs"][job_id] = {**copy.deepcopy(job), "expiresAt": int(now) + JOB_KEEP_SECONDS}
+            self._save()
+
+    def get_job(self, job_id: str) -> dict | None:
+        return copy.deepcopy(self._db["jobs"].get(job_id))
+
+    def start_job(self, job_id: str, started_at: str) -> dict | None:
+        """Mark a queued job running and return it; None if it is unknown or already started."""
+        with self._lock:
+            job = self._db["jobs"].get(job_id)
+            if not job or job["status"] != "queued":
+                return None
+            job.update(status="running", startedAt=started_at)
+            self._save()
+            return copy.deepcopy(job)
+
+    def finish_job(self, job_id: str, status_code: int, result, finished_at: str) -> None:
+        with self._lock:
+            self._db["jobs"][job_id].update(status="done", statusCode=status_code, result=result, finishedAt=finished_at)
+            self._save()
+
+    # --- upcoming tournaments ------------------------------------------------
+    def list_upcoming(self) -> list[dict]:
+        return copy.deepcopy(list(self._db["upcoming"].values()))
+
+    def get_upcoming(self, eid: str) -> dict | None:
+        return copy.deepcopy(self._db["upcoming"].get(eid))
+
+    def put_upcoming(self, event: dict) -> None:
+        with self._lock:
+            self._db["upcoming"][event["eventId"]] = copy.deepcopy(event)
+            self._save()
+
+    def delete_upcoming(self, eid: str) -> None:
+        with self._lock:
+            self._db["upcoming"].pop(eid, None)
+            self._save()
+
+    # --- islands ------------------------------------------------------------
+    def list_islands(self) -> list[dict]:
+        """Oldest first: the first island is the default."""
+        return sorted((dict(i) for i in self._db["islands"].values()), key=lambda i: (i["createdAt"], i["islandId"]))
+
+    def put_island(self, island: dict) -> None:
+        with self._lock:
+            self._db["islands"][island["islandId"]] = dict(island)
+            self._save()
+
+    # --- visitor statistics --------------------------------------------------
+    def count_visitor(self, day: str, code: str) -> int:
+        """Page views by this anonymous visitor code today, including this one."""
+        from datetime import date, timedelta
+
+        with self._lock:
+            visitors = self._db["visitors"]
+            oldest = (date.fromisoformat(day) - timedelta(days=VISITOR_KEEP_DAYS)).isoformat()
+            for key in [k for k in visitors if k.split("#")[0] < oldest]:
+                del visitors[key]
+            key = f"{day}#{code}"
+            visitors[key] = visitors.get(key, 0) + 1
+            self._save()
+            return visitors[key]
+
+    def add_page_view(self, day: str, page: str, referrer: str | None, new_visitor: bool) -> None:
+        with self._lock:
+            stats = self._db["stats"].setdefault(day, {"views": 0, "visitors": 0, "pages": {}, "referrers": {}})
+            stats["views"] += 1
+            stats["visitors"] += int(new_visitor)
+            stats["pages"][page] = stats["pages"].get(page, 0) + 1
+            if referrer:
+                stats["referrers"][referrer] = stats["referrers"].get(referrer, 0) + 1
+            self._save()
+
+    def get_stats(self, first: str, last: str) -> dict:
+        """{"days": {day: {views, visitors}}, "pages": {page: views}, "referrers": {host: views}}"""
+        out = {"days": {}, "pages": {}, "referrers": {}}
+        for day, s in self._db["stats"].items():
+            if first <= day <= last:
+                out["days"][day] = {"views": s["views"], "visitors": s["visitors"]}
+                for section in ("pages", "referrers"):
+                    for k, n in s[section].items():
+                        out[section][k] = out[section].get(k, 0) + n
+        return out
 
     def get_raw(self, tid: str) -> tuple[str, str] | None:
         """(raw upload, file extension)."""
@@ -137,6 +288,7 @@ class LocalStorage:
         """Remove the profile and all derived ratings of a player."""
         with self._lock:
             self._db["profiles"].pop(pid, None)
+            self._db["notes"].pop(pid, None)
             for section in ("ladders", "history"):
                 for ladder in self._db[section].values():
                     ladder.pop(pid, None)
@@ -150,6 +302,21 @@ class LocalStorage:
 
     def erased_ids(self, pids) -> set[str]:
         return set(pids) & set(self._db["erased"])
+
+    # --- merged players --------------------------------------------------------
+    def get_aliases(self, pids) -> dict[str, str]:
+        """{merged playerId: playerId it was merged into} for the given ids that were merged."""
+        return {p: self._db["aliases"][p] for p in set(pids) if p in self._db["aliases"]}
+
+    def set_alias(self, source: str, target: str) -> None:
+        """Remember that `source` was merged into `target`; earlier merges into `source` follow."""
+        with self._lock:
+            aliases = self._db["aliases"]
+            for k, v in aliases.items():
+                if v == source:
+                    aliases[k] = target
+            aliases[source] = target
+            self._save()
 
     # --- derived ratings ---------------------------------------------------
     def write_results(self, result: dict, incremental: bool = False) -> None:
@@ -240,20 +407,27 @@ class LocalStorage:
             self._save()
 
 
-def tournament_meta(t: dict, s3_key: str, raw_key: str, decks: dict | None = None) -> dict:
-    """Tournament table item. decks ({playerId: deck name}) are set by players after the upload
-    and don't affect ratings, so they live only here, not in the tournament JSON."""
+def tournament_meta(t: dict, s3_key: str, raw_key: str, old: dict | None = None) -> dict:
+    """Tournament table item. PLAYER_VALUES (decks) are set by players after the
+    upload and don't affect ratings, so they live only here, not in the tournament JSON; `old`
+    is the previous item, whose values are kept."""
     return {
         "tournamentId": t["id"], "name": t["name"], "date": t["date"], "type": t["type"],
-        "format": t.get("format"), "link": t.get("link"), "sourceFormat": t["sourceFormat"], "uploadedAt": t["uploadedAt"], "uploadedBy": t["uploadedBy"],
+        "format": t.get("format"), "link": t.get("link"), "island": t.get("island"), "sourceFormat": t["sourceFormat"], "uploadedAt": t["uploadedAt"], "uploadedBy": t["uploadedBy"],
         "playerCount": len(t["players"]), "matchCount": sum(1 for m in t["matches"] if m["p2"]),
-        "s3Key": s3_key, "rawKey": raw_key, "decks": decks or {},
+        "s3Key": s3_key, "rawKey": raw_key, **{k: (old or {}).get(k) or {} for k in PLAYER_VALUES},
     }
 
 
 # ---------------------------------------------------------------------------
 # AWS
 # ---------------------------------------------------------------------------
+def datetime_epoch(day) -> int:
+    from datetime import datetime, timezone
+
+    return int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp())
+
+
 def _to_ddb(obj):
     return json.loads(json.dumps(obj), parse_float=Decimal)
 
@@ -310,8 +484,8 @@ class AwsStorage:
         s3_key, raw_key = f"tournaments/{t['id']}.json", f"raw/{t['id']}.{raw_ext}"
         self._put_s3(raw_key, raw_content, "text/plain")
         self._put_s3(s3_key, json.dumps(t), "application/json")
-        old = self.tournaments.get_item(Key={"tournamentId": t["id"]}).get("Item") or {}
-        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, s3_key, raw_key, _from_ddb(old.get("decks")))))
+        old = self.tournaments.get_item(Key={"tournamentId": t["id"]}).get("Item")
+        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, s3_key, raw_key, _from_ddb(old))))
 
     def delete_tournament(self, tid: str) -> bool:
         meta = self.tournaments.get_item(Key={"tournamentId": tid}).get("Item")
@@ -337,29 +511,216 @@ class AwsStorage:
         t = json.loads(self._get_s3(meta["s3Key"]))
         t.update({k: v for k, v in fields.items() if k in TOURNAMENT_FIELDS})
         self._put_s3(meta["s3Key"], json.dumps(t), "application/json")
-        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, meta["s3Key"], meta["rawKey"],
-                                                               _from_ddb(meta.get("decks")))))
+        self.tournaments.put_item(Item=_to_ddb(tournament_meta(t, meta["s3Key"], meta["rawKey"], _from_ddb(meta))))
         return t
 
-    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
+    @staticmethod
+    def _set_map_entry(table, key: dict, field: str, entry: str, value, must_exist: str | None = None) -> bool:
+        """Atomically set (value) or remove (None) table[key].field[entry]."""
         from botocore.exceptions import ClientError
 
-        key = {"tournamentId": tid}
         try:  # a nested path can only be set once the map exists
-            self.tournaments.update_item(Key=key, UpdateExpression="SET decks = if_not_exists(decks, :e)",
-                                         ExpressionAttributeValues={":e": {}},
-                                         ConditionExpression="attribute_exists(tournamentId)")
+            table.update_item(Key=key, UpdateExpression="SET #f = if_not_exists(#f, :e)",
+                              ExpressionAttributeNames={"#f": field}, ExpressionAttributeValues={":e": {}},
+                              **({"ConditionExpression": f"attribute_exists({must_exist})"} if must_exist else {}))
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return False
             raise
-        if deck:
-            self.tournaments.update_item(Key=key, UpdateExpression="SET decks.#p = :d",
-                                         ExpressionAttributeNames={"#p": pid}, ExpressionAttributeValues={":d": deck})
+        names = {"#f": field, "#k": entry}
+        if value:
+            table.update_item(Key=key, UpdateExpression="SET #f.#k = :v", ExpressionAttributeNames=names,
+                              ExpressionAttributeValues={":v": value})
         else:
-            self.tournaments.update_item(Key=key, UpdateExpression="REMOVE decks.#p",
-                                         ExpressionAttributeNames={"#p": pid})
+            table.update_item(Key=key, UpdateExpression="REMOVE #f.#k", ExpressionAttributeNames=names)
         return True
+
+    def set_player_value(self, tid: str, field: str, pid: str, value: str | None) -> bool:
+        return self._set_map_entry(self.tournaments, {"tournamentId": tid}, field, pid, value, "tournamentId")
+
+    def set_deck(self, tid: str, pid: str, deck: str | None) -> bool:
+        return self.set_player_value(tid, "decks", pid, deck)
+
+    # --- private match notes (Diamond) -------------------------------------
+    def get_notes(self, pid: str) -> dict[str, dict[str, str]]:
+        from boto3.dynamodb.conditions import Key
+
+        items = self._query_all(self.players, KeyConditionExpression=Key("playerId").eq(pid) & Key("SK").begins_with("NOTES#"))
+        return {i["SK"][len("NOTES#"):]: i.get("notes", {}) for i in items}
+
+    def set_note(self, pid: str, tid: str, rnd: int, note: str | None) -> None:
+        self._set_map_entry(self.players, {"playerId": pid, "SK": f"NOTES#{tid}"}, "notes", str(rnd), note)
+
+    # --- custom profile URLs (Diamond) -------------------------------------
+    def claim_slug(self, slug: str, pid: str) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            self.players.put_item(Item={"playerId": f"SLUG#{slug}", "SK": "SLUG", "owner": pid},
+                                  ConditionExpression="attribute_not_exists(playerId) OR #o = :p",
+                                  ExpressionAttributeNames={"#o": "owner"}, ExpressionAttributeValues={":p": pid})
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    def release_slug(self, slug: str, pid: str) -> None:
+        from botocore.exceptions import ClientError
+
+        try:
+            self.players.delete_item(Key={"playerId": f"SLUG#{slug}", "SK": "SLUG"}, ConditionExpression="#o = :p",
+                                     ExpressionAttributeNames={"#o": "owner"}, ExpressionAttributeValues={":p": pid})
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+    def resolve_slug(self, slug: str) -> str | None:
+        item = self.players.get_item(Key={"playerId": f"SLUG#{slug}", "SK": "SLUG"}).get("Item")
+        return item["owner"] if item else None
+
+    # --- Eventlink events uploaded by the extension ----------------------------
+    def get_eventlink(self, event_id: str) -> str | None:
+        item = self.players.get_item(Key={"playerId": f"EVENTLINK#{event_id}", "SK": "EVENTLINK"}).get("Item")
+        return item["tournamentId"] if item else None
+
+    def claim_eventlink(self, event_id: str, tid: str, expected: str | None) -> bool:
+        """Point an Eventlink event at tournament `tid`, only if it still points at `expected`."""
+        from botocore.exceptions import ClientError
+
+        condition = ({"ConditionExpression": "attribute_not_exists(playerId)"} if expected is None else
+                     {"ConditionExpression": "tournamentId = :old", "ExpressionAttributeValues": {":old": expected}})
+        try:
+            self.players.put_item(Item={"playerId": f"EVENTLINK#{event_id}", "SK": "EVENTLINK", "tournamentId": tid},
+                                  **condition)
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    # --- background jobs (App.run_job) ---------------------------------------------
+    # request and result are stored as JSON text: no float/Decimal conversions, any nesting
+    @staticmethod
+    def _job(item: dict | None) -> dict | None:
+        if not item:
+            return None
+        job = {k: v for k, v in _from_ddb(item).items() if k not in ("playerId", "SK", "expiresAt")}
+        for k in ("request", "result"):
+            if k in job:
+                job[k] = json.loads(job[k])
+        return job
+
+    def put_job(self, job_id: str, job: dict) -> None:
+        """A new job: {status: "queued", request, createdAt}, deleted a day later (TTL)."""
+        self.players.put_item(Item={**job, "request": json.dumps(job["request"]), "playerId": f"{JOB_PK}{job_id}",
+                                    "SK": "JOB", "expiresAt": int(time.time()) + JOB_KEEP_SECONDS})
+
+    def get_job(self, job_id: str) -> dict | None:
+        return self._job(self.players.get_item(Key={"playerId": f"{JOB_PK}{job_id}", "SK": "JOB"}).get("Item"))
+
+    def start_job(self, job_id: str, started_at: str) -> dict | None:
+        """Mark a queued job running and return it; None if it is unknown or already started."""
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self.players.update_item(
+                Key={"playerId": f"{JOB_PK}{job_id}", "SK": "JOB"}, UpdateExpression="SET #s = :running, startedAt = :t",
+                ConditionExpression="#s = :queued", ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":running": "running", ":queued": "queued", ":t": started_at},
+                ReturnValues="ALL_NEW")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return None
+            raise
+        return self._job(resp["Attributes"])
+
+    def finish_job(self, job_id: str, status_code: int, result, finished_at: str) -> None:
+        self.players.update_item(
+            Key={"playerId": f"{JOB_PK}{job_id}", "SK": "JOB"},
+            UpdateExpression="SET #s = :done, statusCode = :code, #r = :result, finishedAt = :t",
+            ExpressionAttributeNames={"#s": "status", "#r": "result"},
+            ExpressionAttributeValues={":done": "done", ":code": status_code, ":result": json.dumps(result), ":t": finished_at})
+
+    # --- upcoming tournaments ------------------------------------------------
+    def list_upcoming(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Key
+
+        items = self._query_all(self.players, KeyConditionExpression=Key("playerId").eq(UPCOMING_PK))
+        for i in items:
+            for k in ("playerId", "SK", "expiresAt"):
+                i.pop(k, None)
+        return items
+
+    def get_upcoming(self, eid: str) -> dict | None:
+        item = self.players.get_item(Key={"playerId": UPCOMING_PK, "SK": f"EVENT#{eid}"}).get("Item")
+        if not item:
+            return None
+        item = _from_ddb(item)
+        for k in ("playerId", "SK", "expiresAt"):
+            item.pop(k, None)
+        return item
+
+    def put_upcoming(self, event: dict) -> None:
+        """expiresAt (DynamoDB TTL) removes a one-off event a month after it took place (the upload
+        form offers recent ones); recurring events stay until someone removes them."""
+        from datetime import date, timedelta
+
+        item = {**event, "playerId": UPCOMING_PK, "SK": f"EVENT#{event['eventId']}"}
+        if not event.get("recurrence"):
+            item["expiresAt"] = datetime_epoch(date.fromisoformat(event["date"]) + timedelta(days=UPCOMING_KEEP_DAYS))
+        self.players.put_item(Item=_to_ddb(item))
+
+    def delete_upcoming(self, eid: str) -> None:
+        self.players.delete_item(Key={"playerId": UPCOMING_PK, "SK": f"EVENT#{eid}"})
+
+    # --- islands ------------------------------------------------------------
+    def list_islands(self) -> list[dict]:
+        from boto3.dynamodb.conditions import Key
+
+        items = self._query_all(self.players, KeyConditionExpression=Key("playerId").eq(ISLANDS_PK))
+        islands = [{k: v for k, v in i.items() if k not in ("playerId", "SK")} for i in items]
+        return sorted(islands, key=lambda i: (i["createdAt"], i["islandId"]))
+
+    def put_island(self, island: dict) -> None:
+        self.players.put_item(Item=_to_ddb({**island, "playerId": ISLANDS_PK, "SK": f"ISLAND#{island['islandId']}"}))
+
+    # --- visitor statistics --------------------------------------------------
+    def count_visitor(self, day: str, code: str) -> int:
+        from datetime import date, timedelta
+
+        expires = datetime_epoch(date.fromisoformat(day) + timedelta(days=VISITOR_KEEP_DAYS))
+        resp = self.players.update_item(
+            Key={"playerId": VISITOR_PK, "SK": f"{day}#{code}"},
+            UpdateExpression="ADD n :one SET expiresAt = if_not_exists(expiresAt, :exp)",
+            ExpressionAttributeValues={":one": 1, ":exp": expires}, ReturnValues="UPDATED_NEW")
+        return int(resp["Attributes"]["n"])
+
+    def add_page_view(self, day: str, page: str, referrer: str | None, new_visitor: bool) -> None:
+        add = lambda sk, expr="ADD #v :one": self.players.update_item(  # noqa: E731
+            Key={"playerId": STATS_PK, "SK": sk}, UpdateExpression=expr,
+            ExpressionAttributeNames={"#v": "views", **({"#u": "visitors"} if "#u" in expr else {})},
+            ExpressionAttributeValues={":one": 1})
+        add(f"DAY#{day}", "ADD #v :one, #u :one" if new_visitor else "ADD #v :one")
+        add(f"PAGE#{day}#{page}")
+        if referrer:
+            add(f"REF#{day}#{referrer}")
+
+    def get_stats(self, first: str, last: str) -> dict:
+        from boto3.dynamodb.conditions import Key
+
+        def items(prefix: str, end: str) -> list[dict]:
+            return self._query_all(self.players, KeyConditionExpression=Key("playerId").eq(STATS_PK)
+                                   & Key("SK").between(f"{prefix}#{first}", f"{prefix}#{last}{end}"))
+
+        out = {"days": {}, "pages": {}, "referrers": {}}
+        for i in items("DAY", ""):
+            out["days"][i["SK"][len("DAY#"):]] = {"views": i.get("views", 0), "visitors": i.get("visitors", 0)}
+        for prefix, section in (("PAGE", "pages"), ("REF", "referrers")):
+            for i in items(prefix, "#\uffff"):
+                key = i["SK"].split("#", 2)[2]
+                out[section][key] = out[section].get(key, 0) + i.get("views", 0)
+        return out
 
     def load_all_tournaments(self) -> list[dict]:
         return [json.loads(self._get_s3(m["s3Key"])) for m in self._scan_all(self.tournaments)]
@@ -394,7 +755,7 @@ class AwsStorage:
                                 ProjectionExpression="playerId, SK")
         with self.players.batch_writer() as batch:
             for i in items:
-                if i["SK"] != "ERASED":
+                if i["SK"] not in ("ERASED", "ALIAS"):
                     batch.delete_item(Key={"playerId": pid, "SK": i["SK"]})
 
     def add_erased(self, pid: str) -> None:
@@ -402,6 +763,18 @@ class AwsStorage:
 
     def erased_ids(self, pids) -> set[str]:
         return {i["playerId"] for i in self._batch_get([{"playerId": p, "SK": "ERASED"} for p in set(pids)])}
+
+    # --- merged players --------------------------------------------------------
+    def get_aliases(self, pids) -> dict[str, str]:
+        return {i["playerId"]: i["target"] for i in self._batch_get([{"playerId": p, "SK": "ALIAS"} for p in set(pids)])}
+
+    def set_alias(self, source: str, target: str) -> None:
+        from boto3.dynamodb.conditions import Attr
+
+        # merges are rare: a scan for the aliases that pointed at `source` is fine
+        for i in self._scan_all(self.players, FilterExpression=Attr("SK").eq("ALIAS") & Attr("target").eq(source)):
+            self.players.put_item(Item={"playerId": i["playerId"], "SK": "ALIAS", "target": target})
+        self.players.put_item(Item={"playerId": source, "SK": "ALIAS", "target": target})
 
     # --- derived ratings ---------------------------------------------------
     def write_results(self, result: dict, incremental: bool = False) -> None:
@@ -508,18 +881,18 @@ class AwsStorage:
             raise
         mirror = {k: v for k, v in fields.items() if k in ("hidden", "membership")}
         if mirror:
-            for ladder in LADDER_IDS:
-                try:
-                    self.players.update_item(
-                        Key={"playerId": pid, "SK": f"LADDER#{ladder}"},
-                        UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in mirror),
-                        ExpressionAttributeNames={f"#{k}": k for k in mirror},
-                        ExpressionAttributeValues={f":{k}": v for k, v in mirror.items()},
-                        ConditionExpression="attribute_exists(playerId)",
-                    )
-                except ClientError as e:
-                    if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                        raise
+            from boto3.dynamodb.conditions import Key
+
+            # every ladder the player is on, in every island
+            entries = self._query_all(self.players, ProjectionExpression="SK",
+                                      KeyConditionExpression=Key("playerId").eq(pid) & Key("SK").begins_with("LADDER#"))
+            for e in entries:
+                self.players.update_item(
+                    Key={"playerId": pid, "SK": e["SK"]},
+                    UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in mirror),
+                    ExpressionAttributeNames={f"#{k}": k for k in mirror},
+                    ExpressionAttributeValues={f":{k}": v for k, v in mirror.items()},
+                )
         item = _from_ddb(resp["Attributes"])
         item.pop("SK", None)
         return item
